@@ -1,0 +1,24 @@
+body {
+    padding-top: 20px;
+}
+
+.snapshot-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.tab-content {
+    margin-top: 20px;
+}
+
+.role-badge {
+    margin-right: 5px;
+}
+
+#fileContent {
+    background: #f8f9fa;
+    padding: 10px;
+    border-radius: 5px;
+    margin-top: 5px;
+    white-space: pre-wrap;
+}
