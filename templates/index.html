@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="title">MemoryCat - N.E.K.O 备份管理</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="container">
+    <h1 class="mb-4">🐱 <span data-i18n="title">MemoryCat 备份控制台</span></h1>
+
+    <!-- 导航标签 -->
+    <ul class="nav nav-tabs" id="mainTab" role="tablist">
+        <li class="nav-item"><button class="nav-link active" id="groups-tab" data-bs-toggle="tab" data-bs-target="#groups" type="button" data-i18n="groups_tab">备份组</button></li>
+        <li class="nav-item"><button class="nav-link" id="roles-tab" data-bs-toggle="tab" data-bs-target="#roles" type="button" data-i18n="roles_tab">角色管理</button></li>
+        <li class="nav-item"><button class="nav-link" id="import-tab" data-bs-toggle="tab" data-bs-target="#import" type="button" data-i18n="import_tab">导入导出</button></li>
+        <li class="nav-item"><button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" data-i18n="settings_tab">设置</button></li>
+    </ul>
+    <div class="tab-content">
+        <!-- 备份组面板 -->
+        <div class="tab-pane fade show active" id="groups">
+            <div class="card mt-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span data-i18n="groups_header">备份组</span>
+                    <button class="btn btn-primary btn-sm" id="btnAddGroup" data-i18n="add_group">+ 新增组</button>
+                </div>
+                <div class="card-body" id="groupList"><p data-i18n="loading">加载中...</p></div>
+            </div>
+            <div class="card mt-4" id="snapshotDetail" style="display:none;">
+                <div class="card-header">
+                    <span id="detailGroupName"></span> - <span data-i18n="snapshots_title">快照列表</span>
+                    <button class="btn btn-success btn-sm float-end" id="btnBackupNow" data-i18n="backup_now">立即备份</button>
+                </div>
+                <div class="card-body">
+                    <div class="snapshot-list" id="snapshotList"></div>
+                    <div class="mt-3">
+                        <button class="btn btn-outline-secondary btn-sm" id="btnDiff" data-i18n="diff_btn">比较两个快照</button>
+                        <span class="ms-2" id="diffResult"></span>
+                    </div>
+                    <div class="mt-2" id="fileBrowser" style="display:none;">
+                        <h6 data-i18n="file_browser">文件浏览</h6>
+                        <div id="fileList" style="max-height:200px; overflow-y:auto;"></div>
+                        <div id="fileContent" style="background:#f8f9fa; padding:10px; border-radius:5px; margin-top:5px; white-space:pre-wrap;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 角色管理面板 -->
+        <div class="tab-pane fade" id="roles">
+            <div class="card mt-3">
+                <div class="card-header" data-i18n="roles_header">角色列表</div>
+                <div class="card-body" id="roleList"><p data-i18n="loading">加载中...</p></div>
+            </div>
+        </div>
+
+        <!-- 导入导出面板 -->
+        <div class="tab-pane fade" id="import">
+            <div class="card mt-3">
+                <div class="card-header" data-i18n="export_header">导出配置</div>
+                <div class="card-body">
+                    <button class="btn btn-primary" id="btnExport" data-i18n="export_btn">导出当前配置 (ZIP)</button>
+                </div>
+            </div>
+            <div class="card mt-3">
+                <div class="card-header" data-i18n="import_header">导入配置</div>
+                <div class="card-body">
+                    <form id="importForm" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="importFile" class="form-label" data-i18n="select_zip">选择 ZIP 文件</label>
+                            <input class="form-control" type="file" id="importFile" accept=".zip">
+                        </div>
+                        <button type="button" class="btn btn-warning" id="btnImportAnalyze" data-i18n="analyze_btn">分析冲突</button>
+                    </form>
+                    <div id="importResult" class="mt-3"></div>
+                    <div id="conflictList" style="display:none; max-height:400px; overflow-y:auto;"></div>
+                    <button id="btnApplyImport" style="display:none;" class="btn btn-success mt-2" data-i18n="apply_import">应用合并</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设置面板 -->
+        <div class="tab-pane fade" id="settings">
+            <div class="card mt-3">
+                <div class="card-header" data-i18n="settings_header">全局配置</div>
+                <div class="card-body">
+                    <!-- 语言设置 -->
+                    <div class="mb-3 border-bottom pb-3">
+                        <h6 data-i18n="language_section">语言设置</h6>
+                        <div class="row">
+                            <div class="col-md-4">
+                                <label for="langSelect" class="form-label" data-i18n="language_label">基础语言</label>
+                                <select class="form-select" id="langSelect"></select>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check form-switch mt-4">
+                                    <input class="form-check-input" type="checkbox" id="langP">
+                                    <label class="form-check-label" for="langP" data-i18n="lang_p">拟人化 (p)</label>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check form-switch mt-4">
+                                    <input class="form-check-input" type="checkbox" id="langD">
+                                    <label class="form-check-label" for="langD" data-i18n="lang_d">自定义 (d)</label>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn btn-outline-primary btn-sm mt-2" id="saveLangBtn" data-i18n="save_lang">保存语言设置</button>
+                        <span id="langResult" class="ms-2"></span>
+                    </div>
+                    <!-- 路径设置 -->
+                    <div class="mb-3">
+                        <label for="nekoRootInput" class="form-label" data-i18n="neko_root_label">N.E.K.O 数据目录</label>
+                        <input type="text" class="form-control" id="nekoRootInput">
+                        <div class="form-text" data-i18n="restart_hint">修改后需要重启服务才能生效</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="backupRootInput" class="form-label" data-i18n="backup_root_label">备份存储目录</label>
+                        <input type="text" class="form-control" id="backupRootInput">
+                        <div class="form-text" data-i18n="restart_hint">修改后需要重启服务才能生效</div>
+                    </div>
+                    <button class="btn btn-primary" id="saveSettingsBtn" data-i18n="save_config">保存配置</button>
+                    <span id="settingsResult" class="ms-2"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新增/编辑组 Modal -->
+    <div class="modal fade" id="groupModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="groupModalTitle" data-i18n="edit_group">编辑备份组</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editGroupId">
+                    <div class="mb-3"><label data-i18n="name_label">名称</label><input class="form-control" id="groupName" placeholder=""></div>
+                    <div class="mb-3"><label data-i18n="desc_label">描述</label><input class="form-control" id="groupDesc" placeholder=""></div>
+                    <div class="mb-3"><label data-i18n="paths_label">包含路径（逗号分隔）</label><input class="form-control" id="groupPaths" placeholder="如: character_cards, config, memory"></div>
+                    <div class="mb-3"><label data-i18n="interval_label">备份间隔（秒）</label><input class="form-control" id="groupInterval" type="number" value="86400"></div>
+                    <div class="mb-3"><label data-i18n="retention_label">保留数量</label><input class="form-control" id="groupRetention" type="number" value="10"></div>
+                    <div class="form-check mb-3"><input class="form-check-input" type="checkbox" id="groupEnabled" checked><label class="form-check-label" data-i18n="enabled_label">启用</label></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="cancel">取消</button>
+                    <button class="btn btn-primary" id="saveGroupBtn" data-i18n="save">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
