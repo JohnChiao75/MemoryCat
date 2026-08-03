@@ -1,0 +1,435 @@
+// ---------------------- 多语言引擎 ----------------------
+let langDict = {};
+let currentLang = 'en';
+
+function loadLanguage() {
+    return fetch('/api/lang')
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                langDict = data.data.dict;
+                currentLang = data.data.current;
+                // 填充下拉
+                const select = document.getElementById('langSelect');
+                select.innerHTML = '';
+                data.data.available.forEach(lang => {
+                    const opt = document.createElement('option');
+                    opt.value = lang;
+                    opt.textContent = lang;
+                    if (lang === currentLang) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                // 开关
+                document.getElementById('langP').checked = data.data.extensions.p || false;
+                document.getElementById('langD').checked = data.data.extensions.d || false;
+                // 翻译所有元素
+                translatePage();
+            } else {
+                console.error('加载语言失败', data.error);
+            }
+        });
+}
+
+function translatePage() {
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (langDict[key] !== undefined) {
+            if (el.tagName === 'INPUT' && el.type === 'text') {
+                el.placeholder = langDict[key];
+            } else if (el.tagName === 'TEXTAREA') {
+                el.placeholder = langDict[key];
+            } else {
+                el.textContent = langDict[key];
+            }
+        }
+    });
+    if (langDict['title']) {
+        document.title = langDict['title'];
+    }
+}
+
+function saveLanguage() {
+    const lang = document.getElementById('langSelect').value;
+    const p = document.getElementById('langP').checked;
+    const d = document.getElementById('langD').checked;
+    fetch('/api/lang/set', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({current: lang, extensions: {p, d}})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('langResult').innerHTML = '<span class="text-success">语言已更新</span>';
+            loadLanguage(); // 重新加载并翻译
+        } else {
+            document.getElementById('langResult').innerHTML = '<span class="text-danger">保存失败: ' + data.error + '</span>';
+        }
+    });
+}
+
+// ---------------------- 原有功能 ----------------------
+let currentGroupId = null;
+let snapshots = [];
+let importToken = null;
+let conflictData = [];
+
+function fetchGroups() {
+    fetch('/api/groups').then(r=>r.json()).then(data=>{
+        if (data.success) renderGroups(data.data);
+        else alert((langDict['load_fail'] || '加载失败') + ': ' + data.error);
+    });
+}
+
+function renderGroups(groups) {
+    const container = document.getElementById('groupList');
+    if (!groups.length) {
+        container.innerHTML = '<p class="text-muted">' + (langDict['no_groups'] || '暂无备份组') + '</p>';
+        return;
+    }
+    let html = '<div class="list-group">';
+    groups.forEach(g => {
+        const last = g.last_backup ? new Date(g.last_backup*1000).toLocaleString() : (langDict['never'] || '从未');
+        html += `<div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="selectGroup(${g.id})">
+            <div><strong>${g.name}</strong> <span class="text-muted ms-2">${g.description||''}</span>
+            <br><small>${langDict['paths']||'路径'}: ${g.paths.join(', ')} | ${langDict['interval']||'间隔'}: ${g.interval}s | ${langDict['retention']||'保留'}: ${g.retention}</small></div>
+            <div>
+                <span class="badge ${g.enabled?'bg-success':'bg-secondary'}">${g.enabled?(langDict['enabled']||'启用'):(langDict['disabled']||'禁用')}</span>
+                <span class="badge bg-info">${langDict['last']||'上次'}: ${last}</span>
+                <button class="btn btn-sm btn-outline-secondary ms-2" onclick="event.stopPropagation(); editGroup(${g.id})">${langDict['edit']||'编辑'}</button>
+                <button class="btn btn-sm btn-outline-danger ms-1" onclick="event.stopPropagation(); deleteGroup(${g.id})">${langDict['delete']||'删除'}</button>
+            </div>
+        </div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function selectGroup(id) {
+    currentGroupId = id;
+    document.getElementById('snapshotDetail').style.display = 'block';
+    fetch(`/api/groups/${id}`).then(r=>r.json()).then(data=>{
+        if (data.success) document.getElementById('detailGroupName').innerText = data.data.name;
+    });
+    loadSnapshots(id);
+}
+
+function loadSnapshots(groupId) {
+    fetch(`/api/groups/${groupId}/snapshots`).then(r=>r.json()).then(data=>{
+        if (data.success) { snapshots = data.data; renderSnapshots(snapshots); }
+        else alert((langDict['load_snapshots_fail']||'加载快照失败') + ': ' + data.error);
+    });
+}
+
+function renderSnapshots(snapshots) {
+    const container = document.getElementById('snapshotList');
+    if (!snapshots.length) {
+        container.innerHTML = '<p class="text-muted">' + (langDict['no_snapshots']||'暂无快照') + '</p>';
+        return;
+    }
+    let html = '<table class="table table-sm table-striped"><thead><tr><th>'+(langDict['time']||'时间')+'</th><th>'+(langDict['actions']||'操作')+'</th></tr></thead><tbody>';
+    snapshots.forEach(s => {
+        const dt = new Date(s.timestamp*1000).toLocaleString();
+        html += `<tr><td>${dt}</td><td>
+            <button class="btn btn-sm btn-warning" onclick="rollback(${s.id})">${langDict['rollback']||'回滚'}</button>
+            <button class="btn btn-sm btn-info" onclick="browseSnapshot(${s.id})">${langDict['browse']||'浏览'}</button>
+        </td></tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function rollback(snapshotId) {
+    if (!confirm(langDict['confirm_rollback']||'确认回滚到该快照？此操作将覆盖当前数据！')) return;
+    fetch(`/api/groups/${currentGroupId}/rollback/${snapshotId}`, {method:'POST'})
+        .then(r=>r.json()).then(data=>{
+            if (data.success) alert(langDict['rollback_success']||'回滚成功！');
+            else alert((langDict['rollback_fail']||'回滚失败') + ': ' + data.error);
+        });
+}
+
+function browseSnapshot(snapshotId) {
+    const container = document.getElementById('fileBrowser');
+    container.style.display = 'block';
+    const fileList = document.getElementById('fileList');
+    const contentDiv = document.getElementById('fileContent');
+    contentDiv.innerText = '';
+    fetch(`/api/snapshots/${snapshotId}/files`).then(r=>r.json()).then(data=>{
+        if (data.success) {
+            let html = '<ul class="list-unstyled" style="font-size:0.9em;">';
+            data.data.forEach(f => {
+                html += `<li><a href="#" onclick="viewFile(${snapshotId}, '${f}'); return false;">${f}</a></li>`;
+            });
+            html += '</ul>';
+            fileList.innerHTML = html;
+        } else alert((langDict['load_files_fail']||'加载文件列表失败') + ': ' + data.error);
+    });
+}
+
+function viewFile(snapshotId, path) {
+    fetch(`/api/snapshots/${snapshotId}/file?path=${encodeURIComponent(path)}`)
+        .then(r=>r.json()).then(data=>{
+            if (data.success) document.getElementById('fileContent').innerText = data.data.content || (langDict['empty']||'[空]');
+            else alert((langDict['read_file_fail']||'读取文件失败') + ': ' + data.error);
+        });
+}
+
+// 新增/编辑组
+document.getElementById('btnAddGroup').onclick = function() {
+    document.getElementById('editGroupId').value = '';
+    document.getElementById('groupModalTitle').innerText = langDict['add_group'] || '新增备份组';
+    document.getElementById('groupName').value = '';
+    document.getElementById('groupDesc').value = '';
+    document.getElementById('groupPaths').value = '';
+    document.getElementById('groupInterval').value = 86400;
+    document.getElementById('groupRetention').value = 10;
+    document.getElementById('groupEnabled').checked = true;
+    groupModal.show();
+};
+
+function editGroup(id) {
+    fetch(`/api/groups/${id}`).then(r=>r.json()).then(data=>{
+        if (data.success) {
+            const g = data.data;
+            document.getElementById('editGroupId').value = g.id;
+            document.getElementById('groupModalTitle').innerText = langDict['edit_group'] || '编辑备份组';
+            document.getElementById('groupName').value = g.name;
+            document.getElementById('groupDesc').value = g.description || '';
+            document.getElementById('groupPaths').value = g.paths.join(', ');
+            document.getElementById('groupInterval').value = g.interval;
+            document.getElementById('groupRetention').value = g.retention;
+            document.getElementById('groupEnabled').checked = g.enabled;
+            groupModal.show();
+        }
+    });
+}
+
+document.getElementById('saveGroupBtn').onclick = function() {
+    const id = document.getElementById('editGroupId').value;
+    const data = {
+        name: document.getElementById('groupName').value.trim(),
+        description: document.getElementById('groupDesc').value.trim(),
+        paths: document.getElementById('groupPaths').value.split(',').map(s=>s.trim()).filter(Boolean),
+        interval: parseInt(document.getElementById('groupInterval').value),
+        retention: parseInt(document.getElementById('groupRetention').value),
+        enabled: document.getElementById('groupEnabled').checked
+    };
+    if (!data.name || !data.paths.length) {
+        alert(langDict['name_paths_required']||'名称和路径不能为空');
+        return;
+    }
+    const url = id ? `/api/groups/${id}` : '/api/groups';
+    const method = id ? 'PUT' : 'POST';
+    fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
+        .then(r=>r.json()).then(res=>{
+            if (res.success) { groupModal.hide(); fetchGroups(); if (id && currentGroupId==id) loadSnapshots(currentGroupId); }
+            else alert((langDict['save_fail']||'保存失败') + ': ' + res.error);
+        });
+};
+
+function deleteGroup(id) {
+    if (!confirm(langDict['confirm_delete_group']||'确定删除该备份组及其所有快照吗？')) return;
+    fetch(`/api/groups/${id}`, {method:'DELETE'}).then(r=>r.json()).then(res=>{
+        if (res.success) { fetchGroups(); if (currentGroupId==id) { document.getElementById('snapshotDetail').style.display='none'; currentGroupId=null; } }
+        else alert((langDict['delete_fail']||'删除失败') + ': ' + res.error);
+    });
+}
+
+document.getElementById('btnBackupNow').onclick = function() {
+    if (!currentGroupId) return;
+    fetch(`/api/groups/${currentGroupId}/backup`, {method:'POST'})
+        .then(r=>r.json()).then(res=>{
+            if (res.success) { alert(langDict['backup_complete']||'备份完成！'); loadSnapshots(currentGroupId); }
+            else alert((langDict['backup_fail']||'备份失败') + ': ' + res.error);
+        });
+};
+
+document.getElementById('btnDiff').onclick = function() {
+    if (snapshots.length < 2) { alert(langDict['need_two_snapshots']||'至少需要两个快照'); return; }
+    const s1 = prompt(langDict['first_snapshot_id']||'第一个快照 ID', snapshots[0]?.id);
+    const s2 = prompt(langDict['second_snapshot_id']||'第二个快照 ID', snapshots[1]?.id);
+    if (!s1 || !s2) return;
+    fetch(`/api/groups/${currentGroupId}/diff?snap1=${s1}&snap2=${s2}`)
+        .then(r=>r.json()).then(res=>{
+            if (res.success) {
+                const d = res.data;
+                let msg = `${langDict['diff']||'差异'}: ${langDict['added']||'新增'} ${d.added.length}, ${langDict['removed']||'删除'} ${d.removed.length}, ${langDict['modified']||'修改'} ${d.modified.length}`;
+                if (d.added.length) msg += '\n' + (langDict['added']||'新增') + ': ' + d.added.slice(0,5).join(', ') + (d.added.length>5?'...':'');
+                if (d.removed.length) msg += '\n' + (langDict['removed']||'删除') + ': ' + d.removed.slice(0,5).join(', ') + (d.removed.length>5?'...':'');
+                if (d.modified.length) msg += '\n' + (langDict['modified']||'修改') + ': ' + d.modified.slice(0,5).join(', ') + (d.modified.length>5?'...':'');
+                document.getElementById('diffResult').innerText = msg;
+            } else alert((langDict['diff_fail']||'Diff 失败') + ': ' + res.error);
+        });
+};
+
+// ---------------------- 角色管理 ----------------------
+function fetchRoles() {
+    fetch('/api/roles').then(r=>r.json()).then(data=>{
+        if (data.success) renderRoles(data.data);
+        else alert((langDict['load_roles_fail']||'加载角色失败') + ': ' + data.error);
+    });
+}
+
+function renderRoles(roles) {
+    const container = document.getElementById('roleList');
+    if (!roles.length) {
+        container.innerHTML = '<p class="text-muted">' + (langDict['no_roles']||'暂无角色') + '</p>';
+        return;
+    }
+    let html = '<div class="row row-cols-1 row-cols-md-3 g-3">';
+    roles.forEach(r => {
+        const status = [];
+        if (r.has_memory) status.push('💾'+(langDict['memory']||'记忆'));
+        if (r.has_character) status.push('📇'+(langDict['character']||'角色卡'));
+        if (r.has_vrm) status.push('🤖VRM');
+        if (r.has_mmd) status.push('🎮MMD');
+        if (r.has_live2d) status.push('🎭Live2D');
+        const statusStr = status.length ? status.join(' ') : (langDict['no_files']||'（无文件）');
+        const builtinBadge = r.builtin ? '<span class="badge bg-secondary ms-2">'+(langDict['builtin']||'内置')+'</span>' : '';
+        html += `<div class="col"><div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">${r.name} ${builtinBadge}</h5>
+                <p class="card-text small">${statusStr}</p>
+                ${r.builtin ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteRole('${r.name}')">${langDict['delete']||'删除'}</button>`}
+            </div>
+        </div></div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function deleteRole(name) {
+    const confirmName = prompt(`${langDict['confirm_delete_role']||'请输入角色名以确认删除'}: "${name}"`);
+    if (confirmName !== name) { alert(langDict['input_mismatch']||'输入不匹配，取消删除'); return; }
+    fetch(`/api/roles/${name}?confirm=true`, {method:'DELETE'})
+        .then(r=>r.json()).then(res=>{
+            if (res.success) { alert(langDict['delete_success']||'删除成功！'); fetchRoles(); }
+            else alert((langDict['delete_fail']||'删除失败') + ': ' + res.error);
+        });
+}
+
+// ---------------------- 导入导出 ----------------------
+document.getElementById('btnExport').onclick = function() {
+    window.location.href = '/api/export';
+};
+
+document.getElementById('btnImportAnalyze').onclick = function() {
+    const fileInput = document.getElementById('importFile');
+    if (!fileInput.files || fileInput.files.length === 0) {
+        alert(langDict['select_zip_first']||'请选择 ZIP 文件');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    document.getElementById('importResult').innerHTML = langDict['analyzing']||'分析中...';
+    fetch('/api/import/analyze', {method:'POST', body:formData})
+        .then(r=>r.json()).then(res=>{
+            if (res.success) {
+                const conflicts = res.data.conflicts;
+                importToken = res.data.token;
+                if (conflicts.length === 0) {
+                    document.getElementById('importResult').innerHTML = '<span class="text-success">' + (langDict['no_conflicts']||'无冲突，可直接导入') + '</span>';
+                    document.getElementById('conflictList').style.display = 'none';
+                    document.getElementById('btnApplyImport').style.display = 'inline-block';
+                    conflictData = [];
+                } else {
+                    document.getElementById('importResult').innerHTML = `<span class="text-warning">${langDict['conflicts_found']||'发现冲突'}: ${conflicts.length}</span>`;
+                    renderConflictList(conflicts);
+                    document.getElementById('conflictList').style.display = 'block';
+                    document.getElementById('btnApplyImport').style.display = 'inline-block';
+                    conflictData = conflicts;
+                }
+            } else {
+                document.getElementById('importResult').innerHTML = `<span class="text-danger">${langDict['analyze_fail']||'分析失败'}: ${res.error}</span>`;
+            }
+        });
+};
+
+function renderConflictList(conflicts) {
+    const container = document.getElementById('conflictList');
+    let html = `<table class="table table-sm table-bordered"><thead><tr><th>${langDict['file']||'文件'}</th><th>${langDict['local_size']||'本地大小'}</th><th>${langDict['import_size']||'导入大小'}</th><th>${langDict['action']||'选择'}</th></tr></thead><tbody>`;
+    conflicts.forEach((c, idx) => {
+        html += `<tr>
+            <td>${c.path}</td>
+            <td>${c.local_size}</td>
+            <td>${c.zip_size}</td>
+            <td>
+                <select class="form-select form-select-sm" data-idx="${idx}">
+                    <option value="local">${langDict['keep_local']||'保留本地'}</option>
+                    <option value="import">${langDict['use_import']||'采用导入'}</option>
+                    <option value="skip">${langDict['skip']||'跳过'}</option>
+                </select>
+            </td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+document.getElementById('btnApplyImport').onclick = function() {
+    if (!importToken) { alert(langDict['analyze_first']||'请先分析冲突'); return; }
+    const selects = document.querySelectorAll('#conflictList select');
+    let decisions = [];
+    if (selects.length) {
+        selects.forEach(sel => {
+            const idx = parseInt(sel.dataset.idx);
+            const action = sel.value;
+            decisions.push({path: conflictData[idx].path, action});
+        });
+    } else {
+        decisions = [];
+    }
+    fetch('/api/import/apply', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({token: importToken, decisions: decisions})
+    }).then(r=>r.json()).then(res=>{
+        if (res.success) {
+            alert(langDict['import_success']||'导入合并完成！');
+            document.getElementById('importResult').innerHTML = '<span class="text-success">' + (langDict['import_success']||'导入成功') + '</span>';
+            document.getElementById('conflictList').style.display = 'none';
+            document.getElementById('btnApplyImport').style.display = 'none';
+            importToken = null;
+            conflictData = [];
+        } else {
+            alert((langDict['import_fail']||'应用失败') + ': ' + res.error);
+        }
+    });
+};
+
+// ---------------------- 设置 ----------------------
+function loadSettings() {
+    fetch('/api/config').then(r=>r.json()).then(data=>{
+        if (data.success) {
+            document.getElementById('nekoRootInput').value = data.data.neko_root || '';
+            document.getElementById('backupRootInput').value = data.data.backup_root || '';
+        }
+    });
+}
+
+document.getElementById('saveSettingsBtn').onclick = function() {
+    const neko = document.getElementById('nekoRootInput').value.trim();
+    const backup = document.getElementById('backupRootInput').value.trim();
+    if (!neko || !backup) { alert(langDict['paths_required']||'路径不能为空'); return; }
+    fetch('/api/config', {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({neko_root: neko, backup_root: backup})
+    }).then(r=>r.json()).then(res=>{
+        const resultSpan = document.getElementById('settingsResult');
+        if (res.success) resultSpan.innerHTML = '<span class="text-success">' + (langDict['config_saved']||'配置已保存，请重启服务生效') + '</span>';
+        else resultSpan.innerHTML = '<span class="text-danger">' + (langDict['save_fail']||'保存失败') + ': ' + res.error + '</span>';
+    });
+};
+
+document.getElementById('saveLangBtn').onclick = saveLanguage;
+
+// ---------------------- 初始化 ----------------------
+const groupModal = new bootstrap.Modal(document.getElementById('groupModal'));
+
+loadLanguage().then(() => {
+    fetchGroups();
+    fetchRoles();
+    loadSettings();
+    setInterval(() => { if (currentGroupId) loadSnapshots(currentGroupId); }, 30000);
+});
