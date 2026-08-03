@@ -4,7 +4,7 @@
 """
 MemoryCat - N.E.K.O 数据备份与管理工具
 Web 控制台运行在端口 48920
-支持持久化配置、角色管理、导入导出
+支持持久化配置、角色管理、导入导出、多语言
 """
 
 import os
@@ -17,11 +17,12 @@ import time
 import threading
 import zipfile
 import tempfile
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 from functools import wraps
 
-from flask import Flask, request, jsonify, render_template_string, send_file, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_file
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -31,6 +32,7 @@ PORT = 48920
 
 CONFIG_DIR = Path.cwd() / '.memcat'
 CONFIG_FILE = CONFIG_DIR / 'config.json'
+LANG_DIR = Path(__file__).parent / 'lang'
 
 def detect_neko_root():
     home = Path.home()
@@ -42,7 +44,11 @@ def detect_neko_root():
 def get_default_config():
     return {
         "neko_root": str(detect_neko_root()),
-        "backup_root": str(Path.home() / '.local' / 'share' / 'MemoryCat')
+        "backup_root": str(Path.home() / '.local' / 'share' / 'MemoryCat'),
+        "language": {
+            "current": "en",
+            "extensions": {"p": False, "d": False}
+        }
     }
 
 def load_config():
@@ -70,6 +76,55 @@ CONFIG = load_config()
 NEKO_ROOT = Path(CONFIG['neko_root'])
 BACKUP_ROOT = Path(CONFIG['backup_root'])
 DB_PATH = BACKUP_ROOT / 'memorycat.db'
+
+# ---------------------------- 多语言加载 ----------------------------
+def get_available_languages():
+    if not LANG_DIR.exists():
+        return ['en']
+    langs = set()
+    for f in LANG_DIR.glob('*.py'):
+        name = f.stem
+        if '.' not in name:
+            langs.add(name)
+    return sorted(langs)
+
+def load_lang_dict(lang_code, use_p=False, use_d=False):
+    base_file = LANG_DIR / f"{lang_code}.py"
+    if not base_file.exists():
+        return {}
+    candidates = []
+    if use_p and use_d:
+        candidates.append(LANG_DIR / f"{lang_code}.p.d.py")
+    if use_d:
+        candidates.append(LANG_DIR / f"{lang_code}.d.py")
+    if use_p:
+        candidates.append(LANG_DIR / f"{lang_code}.p.py")
+    candidates.append(base_file)
+
+    final_dict = {}
+    for file_path in candidates:
+        if file_path.exists():
+            try:
+                spec = importlib.util.spec_from_file_location("lang_module", file_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                if hasattr(module, 'LANG'):
+                    final_dict.update(module.LANG)
+            except Exception:
+                pass
+    return final_dict
+
+def reload_language():
+    global CURRENT_LANG_DICT
+    lang_cfg = CONFIG.get('language', {})
+    current = lang_cfg.get('current', 'en')
+    ext = lang_cfg.get('extensions', {})
+    use_p = ext.get('p', False)
+    use_d = ext.get('d', False)
+    CURRENT_LANG_DICT = load_lang_dict(current, use_p, use_d)
+
+CURRENT_LANG_DICT = {}
+reload_language()
 
 # ---------------------------- 数据库 ----------------------------
 def init_db():
@@ -117,7 +172,7 @@ def init_db():
 def get_db():
     return sqlite3.connect(str(DB_PATH))
 
-# ---------------------------- 备份核心（同前，略） ----------------------------
+# ---------------------------- 备份核心 ----------------------------
 def get_file_hash(path, block_size=65536):
     hasher = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -374,9 +429,8 @@ def init_scheduler():
     scheduler.add_job(scheduled_backup, trigger=IntervalTrigger(minutes=5), id='backup_job')
     scheduler.start()
 
-# ---------------------------- 新增：角色管理 ----------------------------
+# ---------------------------- 角色管理 ----------------------------
 def get_roles():
-    """返回角色列表（从memory和character_cards的子目录名并集，加上内置YUI）"""
     roles = set()
     for base in ['memory', 'character_cards']:
         dir_path = NEKO_ROOT / base
@@ -384,9 +438,7 @@ def get_roles():
             for item in dir_path.iterdir():
                 if item.is_dir():
                     roles.add(item.name)
-    # 添加内置YUI
     roles.add('YUI')
-    # 构建详细信息
     result = []
     for name in sorted(roles):
         info = {
@@ -402,7 +454,6 @@ def get_roles():
     return result
 
 def delete_role(role_name):
-    """删除角色所有相关目录（memory, character_cards, vrm, mmd, live2d）"""
     if role_name == 'YUI':
         raise ValueError('不能删除内置角色 YUI')
     dirs_to_delete = ['memory', 'character_cards', 'vrm', 'mmd', 'live2d']
@@ -416,62 +467,18 @@ def delete_role(role_name):
         raise ValueError(f'角色 {role_name} 不存在任何关联目录')
     return deleted
 
-# ---------------------------- 新增：导入导出 ----------------------------
+# ---------------------------- 导入导出 ----------------------------
 def export_config():
-    """打包整个 NEKO_ROOT 为 ZIP，返回临时文件路径"""
     if not NEKO_ROOT.exists():
         raise ValueError('N.E.K.O 目录不存在')
     temp_dir = tempfile.mkdtemp()
-    zip_path = os.path.join(temp_dir, 'neko_config.zip')
-    # 打包时，将 NEKO_ROOT 下的所有内容放入压缩包根目录（即压缩包内目录结构从 NEKO_ROOT 开始）
-    # 但为了符合“压缩包中先是N.E.K.O目录”的要求，我们在压缩包内创建一个 N.E.K.O 目录，然后放入内容
-    # 使用 shutil.make_archive 的 root_dir 参数
-    # 我们创建一个临时目录，将 NEKO_ROOT 复制到 N.E.K.O 子目录，再打包
     temp_root = Path(temp_dir) / 'N.E.K.O'
     shutil.copytree(NEKO_ROOT, temp_root, symlinks=False)
     archive_path = shutil.make_archive(os.path.join(temp_dir, 'neko_config'), 'zip', temp_dir, 'N.E.K.O')
     return archive_path
 
 def import_analyze(zip_path):
-    """分析导入冲突，返回冲突文件列表"""
     conflicts = []
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        for info in zf.infolist():
-            # 跳过目录
-            if info.is_dir():
-                continue
-            # 压缩包内路径以 N.E.K.O/ 开头，去掉前缀
-            arcname = info.filename
-            if arcname.startswith('N.E.K.O/'):
-                rel_path = arcname[len('N.E.K.O/'):]
-            else:
-                rel_path = arcname  # 容错
-            if not rel_path:
-                continue
-            local_path = NEKO_ROOT / rel_path
-            if local_path.exists() and local_path.is_file():
-                # 比较内容是否相同（通过哈希或修改时间）
-                # 为避免读取大文件，先比较大小和修改时间
-                # 但 ZIP 中无修改时间，我们比较哈希
-                # 读取 zip 中的文件内容计算哈希
-                with zf.open(info) as f:
-                    zip_hash = hashlib.sha256(f.read()).hexdigest()
-                local_hash = get_file_hash(local_path)
-                if zip_hash != local_hash:
-                    conflicts.append({
-                        'path': rel_path,
-                        'zip_hash': zip_hash,
-                        'local_hash': local_hash,
-                        'local_size': local_path.stat().st_size,
-                        'zip_size': info.file_size
-                    })
-            else:
-                # 本地不存在，直接导入，不算冲突
-                pass
-    return conflicts
-
-def import_apply(zip_path, decisions):
-    """根据决策列表应用导入，decisions: list of {path, action} action: 'local', 'import', 'skip'"""
     with zipfile.ZipFile(zip_path, 'r') as zf:
         for info in zf.infolist():
             if info.is_dir():
@@ -483,31 +490,53 @@ def import_apply(zip_path, decisions):
                 rel_path = arcname
             if not rel_path:
                 continue
-            # 检查是否在决策中
+            local_path = NEKO_ROOT / rel_path
+            if local_path.exists() and local_path.is_file():
+                with zf.open(info) as f:
+                    zip_hash = hashlib.sha256(f.read()).hexdigest()
+                local_hash = get_file_hash(local_path)
+                if zip_hash != local_hash:
+                    conflicts.append({
+                        'path': rel_path,
+                        'zip_hash': zip_hash,
+                        'local_hash': local_hash,
+                        'local_size': local_path.stat().st_size,
+                        'zip_size': info.file_size
+                    })
+    return conflicts
+
+def import_apply(zip_path, decisions):
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            arcname = info.filename
+            if arcname.startswith('N.E.K.O/'):
+                rel_path = arcname[len('N.E.K.O/'):]
+            else:
+                rel_path = arcname
+            if not rel_path:
+                continue
             decision = next((d for d in decisions if d['path'] == rel_path), None)
             if decision:
                 action = decision['action']
                 if action == 'skip':
                     continue
                 elif action == 'local':
-                    continue  # 保留本地
+                    continue
                 elif action == 'import':
-                    # 覆盖本地
                     local_path = NEKO_ROOT / rel_path
                     local_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(info) as src, open(local_path, 'wb') as dst:
                         shutil.copyfileobj(src, dst)
-                else:
-                    continue
             else:
-                # 没有冲突，直接导入
                 local_path = NEKO_ROOT / rel_path
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(local_path, 'wb') as dst:
                     shutil.copyfileobj(src, dst)
 
 # ---------------------------- Flask 应用 ----------------------------
-app = Flask(__name__)
+app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = 'memorycat-secret-key-change-me'
 
 def json_response(func):
@@ -523,7 +552,35 @@ def json_response(func):
 # ---------------------------- 路由 ----------------------------
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template('index.html')
+
+# 多语言 API
+@app.route('/api/lang', methods=['GET'])
+@json_response
+def api_get_lang():
+    return {
+        'current': CONFIG['language']['current'],
+        'extensions': CONFIG['language']['extensions'],
+        'dict': CURRENT_LANG_DICT,
+        'available': get_available_languages()
+    }
+
+@app.route('/api/lang/set', methods=['POST'])
+@json_response
+def api_set_lang():
+    data = request.json
+    current = data.get('current')
+    ext = data.get('extensions', {})
+    if current not in get_available_languages():
+        raise ValueError('不支持的语言')
+    CONFIG['language']['current'] = current
+    CONFIG['language']['extensions'] = {
+        'p': bool(ext.get('p', False)),
+        'd': bool(ext.get('d', False))
+    }
+    save_config(CONFIG)
+    reload_language()
+    return {'status': 'ok'}
 
 # 配置 API
 @app.route('/api/config', methods=['GET'])
@@ -544,7 +601,7 @@ def api_update_config():
     save_config(CONFIG)
     return {'message': '配置已保存，请重启服务使所有更改生效'}
 
-# 备份组 API（略，同前）
+# 备份组 API
 @app.route('/api/groups', methods=['GET'])
 @json_response
 def api_list_groups():
@@ -661,7 +718,7 @@ def api_get_file_content(snapshot_id):
         content = '[二进制文件，无法预览]'
     return {'content': content}
 
-# ---------------------------- 新增：角色管理 API ----------------------------
+# 角色 API
 @app.route('/api/roles', methods=['GET'])
 @json_response
 def api_get_roles():
@@ -670,14 +727,13 @@ def api_get_roles():
 @app.route('/api/roles/<role_name>', methods=['DELETE'])
 @json_response
 def api_delete_role(role_name):
-    # 前端应传递 confirm 参数
     confirm = request.args.get('confirm', 'false').lower() == 'true'
     if not confirm:
         raise ValueError('删除角色需要确认')
     deleted = delete_role(role_name)
     return {'deleted': deleted}
 
-# ---------------------------- 新增：导入导出 API ----------------------------
+# 导入导出 API
 @app.route('/api/export', methods=['GET'])
 def api_export():
     try:
@@ -694,14 +750,11 @@ def api_import_analyze():
     file = request.files['file']
     if file.filename == '':
         raise ValueError('文件名为空')
-    # 保存到临时文件
     temp_dir = tempfile.mkdtemp()
     temp_path = os.path.join(temp_dir, 'upload.zip')
     file.save(temp_path)
     try:
         conflicts = import_analyze(temp_path)
-        # 返回冲突列表，同时返回临时文件路径以便后续应用（用session或缓存，这里简单返回临时路径给前端，但出于安全考虑，最好用session）
-        # 我们将临时路径存入全局字典，用token标识
         token = hashlib.sha256(os.urandom(16)).hexdigest()
         app.config['IMPORT_TEMP'] = app.config.get('IMPORT_TEMP', {})
         app.config['IMPORT_TEMP'][token] = temp_path
@@ -723,7 +776,6 @@ def api_import_apply():
         import_apply(zip_path, decisions)
         return {'status': 'ok'}
     finally:
-        # 清理临时文件
         shutil.rmtree(os.path.dirname(zip_path), ignore_errors=True)
         if token in app.config.get('IMPORT_TEMP', {}):
             del app.config['IMPORT_TEMP'][token]
@@ -737,500 +789,3 @@ if __name__ == '__main__':
     print(f"备份存储目录: {BACKUP_ROOT}")
     print(f"配置文件: {CONFIG_FILE}")
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-
-# ---------------------------- HTML 模板（已整合） ----------------------------
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MemoryCat - N.E.K.O 备份管理</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { padding-top: 20px; }
-        .snapshot-list { max-height: 300px; overflow-y: auto; }
-        .tab-content { margin-top: 20px; }
-        .role-badge { margin-right: 5px; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1 class="mb-4">🐱 MemoryCat 备份控制台</h1>
-
-    <!-- 导航标签 -->
-    <ul class="nav nav-tabs" id="mainTab" role="tablist">
-        <li class="nav-item"><button class="nav-link active" id="groups-tab" data-bs-toggle="tab" data-bs-target="#groups" type="button">备份组</button></li>
-        <li class="nav-item"><button class="nav-link" id="roles-tab" data-bs-toggle="tab" data-bs-target="#roles" type="button">角色管理</button></li>
-        <li class="nav-item"><button class="nav-link" id="import-tab" data-bs-toggle="tab" data-bs-target="#import" type="button">导入导出</button></li>
-        <li class="nav-item"><button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button">设置</button></li>
-    </ul>
-    <div class="tab-content">
-        <!-- 备份组面板 -->
-        <div class="tab-pane fade show active" id="groups">
-            <div class="card mt-3">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span>备份组</span>
-                    <button class="btn btn-primary btn-sm" id="btnAddGroup">+ 新增组</button>
-                </div>
-                <div class="card-body" id="groupList"><p>加载中...</p></div>
-            </div>
-            <div class="card mt-4" id="snapshotDetail" style="display:none;">
-                <div class="card-header">
-                    <span id="detailGroupName"></span> - 快照列表
-                    <button class="btn btn-success btn-sm float-end" id="btnBackupNow">立即备份</button>
-                </div>
-                <div class="card-body">
-                    <div class="snapshot-list" id="snapshotList"></div>
-                    <div class="mt-3">
-                        <button class="btn btn-outline-secondary btn-sm" id="btnDiff">比较两个快照</button>
-                        <span class="ms-2" id="diffResult"></span>
-                    </div>
-                    <div class="mt-2" id="fileBrowser" style="display:none;">
-                        <h6>文件浏览</h6>
-                        <div id="fileList" style="max-height:200px; overflow-y:auto;"></div>
-                        <div id="fileContent" style="background:#f8f9fa; padding:10px; border-radius:5px; margin-top:5px; white-space:pre-wrap;"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 角色管理面板 -->
-        <div class="tab-pane fade" id="roles">
-            <div class="card mt-3">
-                <div class="card-header">角色列表</div>
-                <div class="card-body" id="roleList"><p>加载中...</p></div>
-            </div>
-        </div>
-
-        <!-- 导入导出面板 -->
-        <div class="tab-pane fade" id="import">
-            <div class="card mt-3">
-                <div class="card-header">导出配置</div>
-                <div class="card-body">
-                    <button class="btn btn-primary" id="btnExport">导出当前配置 (ZIP)</button>
-                </div>
-            </div>
-            <div class="card mt-3">
-                <div class="card-header">导入配置</div>
-                <div class="card-body">
-                    <form id="importForm" enctype="multipart/form-data">
-                        <div class="mb-3">
-                            <label for="importFile" class="form-label">选择 ZIP 文件</label>
-                            <input class="form-control" type="file" id="importFile" accept=".zip">
-                        </div>
-                        <button type="button" class="btn btn-warning" id="btnImportAnalyze">分析冲突</button>
-                    </form>
-                    <div id="importResult" class="mt-3"></div>
-                    <div id="conflictList" style="display:none; max-height:400px; overflow-y:auto;"></div>
-                    <button id="btnApplyImport" style="display:none;" class="btn btn-success mt-2">应用合并</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- 设置面板 -->
-        <div class="tab-pane fade" id="settings">
-            <div class="card mt-3">
-                <div class="card-header">全局配置</div>
-                <div class="card-body">
-                    <div class="mb-3">
-                        <label for="nekoRootInput" class="form-label">N.E.K.O 数据目录</label>
-                        <input type="text" class="form-control" id="nekoRootInput">
-                        <div class="form-text">修改后需要重启服务才能生效</div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="backupRootInput" class="form-label">备份存储目录</label>
-                        <input type="text" class="form-control" id="backupRootInput">
-                        <div class="form-text">修改后需要重启服务才能生效</div>
-                    </div>
-                    <button class="btn btn-primary" id="saveSettingsBtn">保存配置</button>
-                    <span id="settingsResult" class="ms-2"></span>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 新增/编辑组 Modal -->
-    <div class="modal fade" id="groupModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="groupModalTitle">编辑备份组</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <input type="hidden" id="editGroupId">
-                    <div class="mb-3"><label>名称</label><input class="form-control" id="groupName" placeholder="名称"></div>
-                    <div class="mb-3"><label>描述</label><input class="form-control" id="groupDesc" placeholder="描述"></div>
-                    <div class="mb-3"><label>包含路径（逗号分隔）</label><input class="form-control" id="groupPaths" placeholder="如: character_cards, config, memory"></div>
-                    <div class="mb-3"><label>备份间隔（秒）</label><input class="form-control" id="groupInterval" type="number" value="86400"></div>
-                    <div class="mb-3"><label>保留数量</label><input class="form-control" id="groupRetention" type="number" value="10"></div>
-                    <div class="form-check mb-3"><input class="form-check-input" type="checkbox" id="groupEnabled" checked><label class="form-check-label">启用</label></div>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button class="btn btn-primary" id="saveGroupBtn">保存</button>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    // ---------------------- 全局状态 ----------------------
-    let currentGroupId = null;
-    let snapshots = [];
-    let importToken = null;
-    let conflictData = [];
-
-    // ---------------------- 备份组功能（同前）---------------------
-    function fetchGroups() {
-        fetch('/api/groups').then(r=>r.json()).then(data=>{
-            if (data.success) renderGroups(data.data);
-            else alert('加载失败: ' + data.error);
-        });
-    }
-
-    function renderGroups(groups) {
-        const container = document.getElementById('groupList');
-        if (!groups.length) { container.innerHTML = '<p class="text-muted">暂无备份组</p>'; return; }
-        let html = '<div class="list-group">';
-        groups.forEach(g => {
-            const last = g.last_backup ? new Date(g.last_backup*1000).toLocaleString() : '从未';
-            html += `<div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="selectGroup(${g.id})">
-                <div><strong>${g.name}</strong> <span class="text-muted ms-2">${g.description||''}</span>
-                <br><small>路径: ${g.paths.join(', ')} | 间隔: ${g.interval}s | 保留: ${g.retention}</small></div>
-                <div>
-                    <span class="badge ${g.enabled?'bg-success':'bg-secondary'}">${g.enabled?'启用':'禁用'}</span>
-                    <span class="badge bg-info">上次: ${last}</span>
-                    <button class="btn btn-sm btn-outline-secondary ms-2" onclick="event.stopPropagation(); editGroup(${g.id})">编辑</button>
-                    <button class="btn btn-sm btn-outline-danger ms-1" onclick="event.stopPropagation(); deleteGroup(${g.id})">删除</button>
-                </div>
-            </div>`;
-        });
-        html += '</div>';
-        container.innerHTML = html;
-    }
-
-    function selectGroup(id) {
-        currentGroupId = id;
-        document.getElementById('snapshotDetail').style.display = 'block';
-        fetch(`/api/groups/${id}`).then(r=>r.json()).then(data=>{
-            if (data.success) document.getElementById('detailGroupName').innerText = data.data.name;
-        });
-        loadSnapshots(id);
-    }
-
-    function loadSnapshots(groupId) {
-        fetch(`/api/groups/${groupId}/snapshots`).then(r=>r.json()).then(data=>{
-            if (data.success) { snapshots = data.data; renderSnapshots(snapshots); }
-            else alert('加载快照失败: ' + data.error);
-        });
-    }
-
-    function renderSnapshots(snapshots) {
-        const container = document.getElementById('snapshotList');
-        if (!snapshots.length) { container.innerHTML = '<p class="text-muted">暂无快照</p>'; return; }
-        let html = '<table class="table table-sm table-striped"><thead><tr><th>时间</th><th>操作</th></tr></thead><tbody>';
-        snapshots.forEach(s => {
-            const dt = new Date(s.timestamp*1000).toLocaleString();
-            html += `<tr><td>${dt}</td><td>
-                <button class="btn btn-sm btn-warning" onclick="rollback(${s.id})">回滚</button>
-                <button class="btn btn-sm btn-info" onclick="browseSnapshot(${s.id})">浏览</button>
-            </td></tr>`;
-        });
-        html += '</tbody></table>';
-        container.innerHTML = html;
-    }
-
-    function rollback(snapshotId) {
-        if (!confirm('确认回滚到该快照？此操作将覆盖当前数据！')) return;
-        fetch(`/api/groups/${currentGroupId}/rollback/${snapshotId}`, {method:'POST'})
-            .then(r=>r.json()).then(data=>{
-                if (data.success) alert('回滚成功！'); else alert('回滚失败: ' + data.error);
-            });
-    }
-
-    function browseSnapshot(snapshotId) {
-        const container = document.getElementById('fileBrowser');
-        container.style.display = 'block';
-        const fileList = document.getElementById('fileList');
-        const contentDiv = document.getElementById('fileContent');
-        contentDiv.innerText = '';
-        fetch(`/api/snapshots/${snapshotId}/files`).then(r=>r.json()).then(data=>{
-            if (data.success) {
-                let html = '<ul class="list-unstyled" style="font-size:0.9em;">';
-                data.data.forEach(f => {
-                    html += `<li><a href="#" onclick="viewFile(${snapshotId}, '${f}'); return false;">${f}</a></li>`;
-                });
-                html += '</ul>';
-                fileList.innerHTML = html;
-            } else alert('加载文件列表失败');
-        });
-    }
-
-    function viewFile(snapshotId, path) {
-        fetch(`/api/snapshots/${snapshotId}/file?path=${encodeURIComponent(path)}`)
-            .then(r=>r.json()).then(data=>{
-                if (data.success) document.getElementById('fileContent').innerText = data.data.content || '[空]';
-                else alert('读取文件失败: ' + data.error);
-            });
-    }
-
-    document.getElementById('btnAddGroup').onclick = function() {
-        document.getElementById('editGroupId').value = '';
-        document.getElementById('groupModalTitle').innerText = '新增备份组';
-        document.getElementById('groupName').value = '';
-        document.getElementById('groupDesc').value = '';
-        document.getElementById('groupPaths').value = '';
-        document.getElementById('groupInterval').value = 86400;
-        document.getElementById('groupRetention').value = 10;
-        document.getElementById('groupEnabled').checked = true;
-        groupModal.show();
-    };
-
-    function editGroup(id) {
-        fetch(`/api/groups/${id}`).then(r=>r.json()).then(data=>{
-            if (data.success) {
-                const g = data.data;
-                document.getElementById('editGroupId').value = g.id;
-                document.getElementById('groupModalTitle').innerText = '编辑备份组';
-                document.getElementById('groupName').value = g.name;
-                document.getElementById('groupDesc').value = g.description || '';
-                document.getElementById('groupPaths').value = g.paths.join(', ');
-                document.getElementById('groupInterval').value = g.interval;
-                document.getElementById('groupRetention').value = g.retention;
-                document.getElementById('groupEnabled').checked = g.enabled;
-                groupModal.show();
-            }
-        });
-    }
-
-    document.getElementById('saveGroupBtn').onclick = function() {
-        const id = document.getElementById('editGroupId').value;
-        const data = {
-            name: document.getElementById('groupName').value.trim(),
-            description: document.getElementById('groupDesc').value.trim(),
-            paths: document.getElementById('groupPaths').value.split(',').map(s=>s.trim()).filter(Boolean),
-            interval: parseInt(document.getElementById('groupInterval').value),
-            retention: parseInt(document.getElementById('groupRetention').value),
-            enabled: document.getElementById('groupEnabled').checked
-        };
-        if (!data.name || !data.paths.length) { alert('名称和路径不能为空'); return; }
-        const url = id ? `/api/groups/${id}` : '/api/groups';
-        const method = id ? 'PUT' : 'POST';
-        fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
-            .then(r=>r.json()).then(res=>{
-                if (res.success) { groupModal.hide(); fetchGroups(); if (id && currentGroupId==id) loadSnapshots(currentGroupId); }
-                else alert('保存失败: ' + res.error);
-            });
-    };
-
-    function deleteGroup(id) {
-        if (!confirm('确定删除该备份组及其所有快照吗？')) return;
-        fetch(`/api/groups/${id}`, {method:'DELETE'}).then(r=>r.json()).then(res=>{
-            if (res.success) { fetchGroups(); if (currentGroupId==id) { document.getElementById('snapshotDetail').style.display='none'; currentGroupId=null; } }
-            else alert('删除失败: ' + res.error);
-        });
-    }
-
-    document.getElementById('btnBackupNow').onclick = function() {
-        if (!currentGroupId) return;
-        fetch(`/api/groups/${currentGroupId}/backup`, {method:'POST'})
-            .then(r=>r.json()).then(res=>{
-                if (res.success) { alert('备份完成！'); loadSnapshots(currentGroupId); }
-                else alert('备份失败: ' + res.error);
-            });
-    };
-
-    document.getElementById('btnDiff').onclick = function() {
-        if (snapshots.length < 2) { alert('至少需要两个快照'); return; }
-        const s1 = prompt('第一个快照 ID', snapshots[0]?.id);
-        const s2 = prompt('第二个快照 ID', snapshots[1]?.id);
-        if (!s1 || !s2) return;
-        fetch(`/api/groups/${currentGroupId}/diff?snap1=${s1}&snap2=${s2}`)
-            .then(r=>r.json()).then(res=>{
-                if (res.success) {
-                    const d = res.data;
-                    let msg = `差异: 新增 ${d.added.length}, 删除 ${d.removed.length}, 修改 ${d.modified.length}`;
-                    if (d.added.length) msg += '\\n新增: ' + d.added.slice(0,5).join(', ') + (d.added.length>5?'...':'');
-                    if (d.removed.length) msg += '\\n删除: ' + d.removed.slice(0,5).join(', ') + (d.removed.length>5?'...':'');
-                    if (d.modified.length) msg += '\\n修改: ' + d.modified.slice(0,5).join(', ') + (d.modified.length>5?'...':'');
-                    document.getElementById('diffResult').innerText = msg;
-                } else alert('Diff 失败: ' + res.error);
-            });
-    };
-
-    // ---------------------- 角色管理 ----------------------
-    function fetchRoles() {
-        fetch('/api/roles').then(r=>r.json()).then(data=>{
-            if (data.success) renderRoles(data.data);
-            else alert('加载角色失败: ' + data.error);
-        });
-    }
-
-    function renderRoles(roles) {
-        const container = document.getElementById('roleList');
-        if (!roles.length) { container.innerHTML = '<p class="text-muted">暂无角色</p>'; return; }
-        let html = '<div class="row row-cols-1 row-cols-md-3 g-3">';
-        roles.forEach(r => {
-            const status = [];
-            if (r.has_memory) status.push('💾记忆');
-            if (r.has_character) status.push('📇角色卡');
-            if (r.has_vrm) status.push('🤖VRM');
-            if (r.has_mmd) status.push('🎮MMD');
-            if (r.has_live2d) status.push('🎭Live2D');
-            const statusStr = status.length ? status.join(' ') : '（无文件）';
-            const builtinBadge = r.builtin ? '<span class="badge bg-secondary ms-2">内置</span>' : '';
-            html += `<div class="col"><div class="card h-100">
-                <div class="card-body">
-                    <h5 class="card-title">${r.name} ${builtinBadge}</h5>
-                    <p class="card-text small">${statusStr}</p>
-                    ${r.builtin ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteRole('${r.name}')">删除</button>`}
-                </div>
-            </div></div>`;
-        });
-        html += '</div>';
-        container.innerHTML = html;
-    }
-
-    function deleteRole(name) {
-        const confirmName = prompt(`请输入角色名 "${name}" 以确认删除：`);
-        if (confirmName !== name) { alert('输入不匹配，取消删除'); return; }
-        fetch(`/api/roles/${name}?confirm=true`, {method:'DELETE'})
-            .then(r=>r.json()).then(res=>{
-                if (res.success) { alert('删除成功！'); fetchRoles(); }
-                else alert('删除失败: ' + res.error);
-            });
-    }
-
-    // ---------------------- 导入导出 ----------------------
-    document.getElementById('btnExport').onclick = function() {
-        window.location.href = '/api/export';
-    };
-
-    document.getElementById('btnImportAnalyze').onclick = function() {
-        const fileInput = document.getElementById('importFile');
-        if (!fileInput.files || fileInput.files.length === 0) {
-            alert('请选择 ZIP 文件');
-            return;
-        }
-        const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
-        document.getElementById('importResult').innerHTML = '分析中...';
-        fetch('/api/import/analyze', {method:'POST', body:formData})
-            .then(r=>r.json()).then(res=>{
-                if (res.success) {
-                    const conflicts = res.data.conflicts;
-                    importToken = res.data.token;
-                    if (conflicts.length === 0) {
-                        document.getElementById('importResult').innerHTML = '<span class="text-success">无冲突，可直接导入</span>';
-                        // 直接显示应用按钮
-                        document.getElementById('conflictList').style.display = 'none';
-                        document.getElementById('btnApplyImport').style.display = 'inline-block';
-                        conflictData = [];
-                    } else {
-                        document.getElementById('importResult').innerHTML = `<span class="text-warning">发现 ${conflicts.length} 个冲突文件，请选择处理方式：</span>`;
-                        renderConflictList(conflicts);
-                        document.getElementById('conflictList').style.display = 'block';
-                        document.getElementById('btnApplyImport').style.display = 'inline-block';
-                        conflictData = conflicts;
-                    }
-                } else {
-                    document.getElementById('importResult').innerHTML = `<span class="text-danger">分析失败: ${res.error}</span>`;
-                }
-            });
-    };
-
-    function renderConflictList(conflicts) {
-        const container = document.getElementById('conflictList');
-        let html = '<table class="table table-sm table-bordered"><thead><tr><th>文件</th><th>本地大小</th><th>导入大小</th><th>选择</th></tr></thead><tbody>';
-        conflicts.forEach((c, idx) => {
-            html += `<tr>
-                <td>${c.path}</td>
-                <td>${c.local_size}</td>
-                <td>${c.zip_size}</td>
-                <td>
-                    <select class="form-select form-select-sm" data-idx="${idx}">
-                        <option value="local">保留本地</option>
-                        <option value="import">采用导入</option>
-                        <option value="skip">跳过</option>
-                    </select>
-                </td>
-            </tr>`;
-        });
-        html += '</tbody></table>';
-        container.innerHTML = html;
-    }
-
-    document.getElementById('btnApplyImport').onclick = function() {
-        if (!importToken) { alert('请先分析冲突'); return; }
-        // 收集决策
-        const selects = document.querySelectorAll('#conflictList select');
-        let decisions = [];
-        if (selects.length) {
-            selects.forEach(sel => {
-                const idx = parseInt(sel.dataset.idx);
-                const action = sel.value;
-                decisions.push({path: conflictData[idx].path, action});
-            });
-        } else {
-            // 无冲突，所有文件直接导入（无决策，应用时全部采用导入）
-            decisions = [];
-        }
-        fetch('/api/import/apply', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({token: importToken, decisions: decisions})
-        }).then(r=>r.json()).then(res=>{
-            if (res.success) {
-                alert('导入合并完成！');
-                document.getElementById('importResult').innerHTML = '<span class="text-success">导入成功</span>';
-                document.getElementById('conflictList').style.display = 'none';
-                document.getElementById('btnApplyImport').style.display = 'none';
-                importToken = null;
-                conflictData = [];
-            } else {
-                alert('应用失败: ' + res.error);
-            }
-        });
-    };
-
-    // ---------------------- 设置 ----------------------
-    function loadSettings() {
-        fetch('/api/config').then(r=>r.json()).then(data=>{
-            if (data.success) {
-                document.getElementById('nekoRootInput').value = data.data.neko_root || '';
-                document.getElementById('backupRootInput').value = data.data.backup_root || '';
-            }
-        });
-    }
-
-    document.getElementById('saveSettingsBtn').onclick = function() {
-        const neko = document.getElementById('nekoRootInput').value.trim();
-        const backup = document.getElementById('backupRootInput').value.trim();
-        if (!neko || !backup) { alert('路径不能为空'); return; }
-        fetch('/api/config', {
-            method: 'PUT',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({neko_root: neko, backup_root: backup})
-        }).then(r=>r.json()).then(res=>{
-            const resultSpan = document.getElementById('settingsResult');
-            if (res.success) resultSpan.innerHTML = '<span class="text-success">配置已保存，请重启服务生效</span>';
-            else resultSpan.innerHTML = '<span class="text-danger">保存失败: ' + res.error + '</span>';
-        });
-    };
-
-    // ---------------------- 初始化 ----------------------
-    const groupModal = new bootstrap.Modal(document.getElementById('groupModal'));
-    fetchGroups();
-    fetchRoles();
-    loadSettings();
-
-    // 定时刷新快照
-    setInterval(() => { if (currentGroupId) loadSnapshots(currentGroupId); }, 30000);
-</script>
-</body>
-</html>
-"""
