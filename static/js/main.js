@@ -68,7 +68,7 @@ function saveLanguage() {
     });
 }
 
-// ---------------------- 原有功能 ----------------------
+// ---------------------- 备份组管理 ----------------------
 let currentGroupId = null;
 let snapshots = [];
 let importToken = null;
@@ -96,13 +96,29 @@ function renderGroups(groups) {
             <div>
                 <span class="badge ${g.enabled?'bg-success':'bg-secondary'}">${g.enabled?(langDict['enabled']||'启用'):(langDict['disabled']||'禁用')}</span>
                 <span class="badge bg-info">${langDict['last']||'上次'}: ${last}</span>
-                <button class="btn btn-sm btn-outline-secondary ms-2" onclick="event.stopPropagation(); editGroup(${g.id})">${langDict['edit']||'编辑'}</button>
-                <button class="btn btn-sm btn-outline-danger ms-1" onclick="event.stopPropagation(); deleteGroup(${g.id})">${langDict['delete']||'删除'}</button>
+                <button class="btn btn-sm btn-outline-primary ms-2" onclick="event.stopPropagation(); backupGroup(${g.id})" data-i18n="backup_now_btn">备份</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation(); editGroup(${g.id})" data-i18n="edit">编辑</button>
+                <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteGroup(${g.id})" data-i18n="delete">删除</button>
             </div>
         </div>`;
     });
     html += '</div>';
     container.innerHTML = html;
+}
+
+// 新增：手动备份指定组
+function backupGroup(groupId) {
+    if (!confirm(langDict['confirm_backup'] || '确认立即备份该组？')) return;
+    fetch(`/api/groups/${groupId}/backup`, {method:'POST'})
+        .then(r=>r.json()).then(res=>{
+            if (res.success) {
+                alert(langDict['backup_complete'] || '备份完成！');
+                if (currentGroupId == groupId) loadSnapshots(groupId);
+                fetchGroups(); // 更新上次备份时间
+            } else {
+                alert((langDict['backup_fail'] || '备份失败') + ': ' + res.error);
+            }
+        });
 }
 
 function selectGroup(id) {
@@ -237,11 +253,7 @@ function deleteGroup(id) {
 
 document.getElementById('btnBackupNow').onclick = function() {
     if (!currentGroupId) return;
-    fetch(`/api/groups/${currentGroupId}/backup`, {method:'POST'})
-        .then(r=>r.json()).then(res=>{
-            if (res.success) { alert(langDict['backup_complete']||'备份完成！'); loadSnapshots(currentGroupId); }
-            else alert((langDict['backup_fail']||'备份失败') + ': ' + res.error);
-        });
+    backupGroup(currentGroupId);
 };
 
 document.getElementById('btnDiff').onclick = function() {
@@ -262,7 +274,7 @@ document.getElementById('btnDiff').onclick = function() {
         });
 };
 
-// ---------------------- 角色管理 ----------------------
+// ---------------------- 角色管理（增加目录链接） ----------------------
 function fetchRoles() {
     fetch('/api/roles').then(r=>r.json()).then(data=>{
         if (data.success) renderRoles(data.data);
@@ -279,17 +291,28 @@ function renderRoles(roles) {
     let html = '<div class="row row-cols-1 row-cols-md-3 g-3">';
     roles.forEach(r => {
         const status = [];
-        if (r.has_memory) status.push('💾'+(langDict['memory']||'记忆'));
-        if (r.has_character) status.push('📇'+(langDict['character']||'角色卡'));
-        if (r.has_vrm) status.push('🤖VRM');
-        if (r.has_mmd) status.push('🎮MMD');
-        if (r.has_live2d) status.push('🎭Live2D');
-        const statusStr = status.length ? status.join(' ') : (langDict['no_files']||'（无文件）');
+        // 将关联目录变为可点击链接
+        const dirMap = {
+            'memory': r.has_memory ? 'memory' : null,
+            'character_cards': r.has_character ? 'character_cards' : null,
+            'vrm': r.has_vrm ? 'vrm' : null,
+            'mmd': r.has_mmd ? 'mmd' : null,
+            'live2d': r.has_live2d ? 'live2d' : null
+        };
+        let statusHtml = '';
+        for (const [dir, exists] of Object.entries(dirMap)) {
+            if (exists) {
+                const url = `/browse?path=${encodeURIComponent(dir + '/' + r.name)}`;
+                statusHtml += `<a href="${url}" target="_blank" class="badge bg-info me-1">${dir}</a>`;
+            }
+        }
+        if (!statusHtml) statusHtml = '<span class="text-muted">' + (langDict['no_files']||'（无文件）') + '</span>';
+
         const builtinBadge = r.builtin ? '<span class="badge bg-secondary ms-2">'+(langDict['builtin']||'内置')+'</span>' : '';
         html += `<div class="col"><div class="card h-100">
             <div class="card-body">
                 <h5 class="card-title">${r.name} ${builtinBadge}</h5>
-                <p class="card-text small">${statusStr}</p>
+                <p class="card-text small">${statusHtml}</p>
                 ${r.builtin ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteRole('${r.name}')">${langDict['delete']||'删除'}</button>`}
             </div>
         </div></div>`;

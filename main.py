@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+MemoryCat - N.E.K.O 数据备份与管理工具
+Web 控制台运行在端口 48921
+"""
 
 import os
 import sys
@@ -17,13 +21,13 @@ from datetime import datetime
 from pathlib import Path
 from functools import wraps
 
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, abort
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 # ---------------------------- 配置管理 ----------------------------
 APP_NAME = "MemoryCat"
-PORT = 48921
+PORT = 48921  # 修改端口
 
 CONFIG_DIR = Path.cwd() / '.memcat'
 CONFIG_FILE = CONFIG_DIR / 'config.json'
@@ -41,7 +45,7 @@ def get_default_config():
         "neko_root": str(detect_neko_root()),
         "backup_root": str(Path.home() / '.local' / 'share' / 'MemoryCat'),
         "language": {
-            "current": "en",
+            "current": "zh",   # 默认中文
             "extensions": {"p": False, "d": False}
         }
     }
@@ -530,9 +534,100 @@ def import_apply(zip_path, decisions):
                 with zf.open(info) as src, open(local_path, 'wb') as dst:
                     shutil.copyfileobj(src, dst)
 
+# ---------------------------- 文件浏览器 ----------------------------
+def safe_path(relative_path):
+    """确保路径在 NEKO_ROOT 下，防止目录遍历攻击"""
+    # 规范化路径
+    root = NEKO_ROOT.resolve()
+    target = (root / relative_path).resolve()
+    if not str(target).startswith(str(root)):
+        raise ValueError("路径越界")
+    return target
+
 # ---------------------------- Flask 应用 ----------------------------
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = 'memorycat-secret-key-change-me'
+
+@app.template_filter('timestamp_to_datetime')
+def timestamp_to_datetime(ts):
+    """将 Unix 时间戳格式化为可读日期时间"""
+    if not ts:
+        return ''
+    return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+
+@app.route('/browse')
+def browse_page():
+    """文件浏览器页面"""
+    rel_path = request.args.get('path', '')
+    try:
+        target = safe_path(rel_path)
+    except ValueError:
+        abort(404)
+    if not target.exists():
+        abort(404)
+    if not target.is_dir():
+        # 如果是文件，直接下载
+        return send_file(target, as_attachment=True)
+    # 获取目录内容
+    items = []
+    for item in target.iterdir():
+        is_dir = item.is_dir()
+        stat = item.stat() if item.exists() else None
+        items.append({
+            'name': item.name,
+            'is_dir': is_dir,
+            'size': stat.st_size if stat else 0,
+            'mtime': stat.st_mtime if stat else 0
+        })
+    # 排序：目录在前，按名称排序
+    items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
+    # 计算父路径
+    parent_path = ''
+    if rel_path:
+        parent_path = str(Path(rel_path).parent)
+        if parent_path == '.':
+            parent_path = ''
+    # 当前路径显示
+    current_path = rel_path if rel_path else '根目录'
+    return render_template('browse.html',
+                           current_path=current_path,
+                           rel_path=rel_path,
+                           parent_path=parent_path,
+                           items=items,
+                           root_name=NEKO_ROOT.name)
+
+@app.route('/api/browse')
+def api_browse():
+    """返回目录内容的 JSON 数据（供前端 AJAX 使用）"""
+    rel_path = request.args.get('path', '')
+    try:
+        target = safe_path(rel_path)
+    except ValueError:
+        return jsonify({'success': False, 'error': '路径越界'}), 400
+    if not target.exists() or not target.is_dir():
+        return jsonify({'success': False, 'error': '目录不存在'}), 404
+    items = []
+    for item in target.iterdir():
+        is_dir = item.is_dir()
+        stat = item.stat() if item.exists() else None
+        items.append({
+            'name': item.name,
+            'is_dir': is_dir,
+            'size': stat.st_size if stat else 0,
+            'mtime': stat.st_mtime if stat else 0
+        })
+    items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
+    parent = ''
+    if rel_path:
+        parent = str(Path(rel_path).parent)
+        if parent == '.':
+            parent = ''
+    return jsonify({
+        'success': True,
+        'items': items,
+        'rel_path': rel_path,
+        'parent': parent
+    })
 
 def json_response(func):
     @wraps(func)
