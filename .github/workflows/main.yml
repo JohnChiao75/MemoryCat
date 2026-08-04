@@ -1,0 +1,127 @@
+name: Development Build
+
+on:
+  push:
+    branches: [ main, master ]   # 可根据实际分支调整
+  workflow_dispatch:             # 允许手动触发
+
+jobs:
+  # 构建 Linux 源码包（tar.gz）
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies (for packaging only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask apscheduler   # 仅供验证，非必需
+
+      - name: Build Linux tarball
+        run: |
+          mkdir -p dist
+          tar -czvf dist/memorycat-dev-build-linux.tar.gz \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.memcat' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='dist' \
+            --exclude='build' \
+            --exclude='*.spec' \
+            .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifact
+          path: dist/memorycat-dev-build-linux.tar.gz
+
+  # 构建 Windows 可执行文件（exe）
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask apscheduler pyinstaller
+
+      - name: Build Windows executable
+        run: |
+          pyinstaller --onefile --name memorycat-dev-build-win64 `
+            --add-data "templates;templates" `
+            --add-data "static;static" `
+            --add-data "lang;lang" `
+            memcatd.py
+          # 将生成的 exe 移动到 dist（若不存在则创建）
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item -Path dist\memorycat-dev-build-win64.exe -Destination dist\memorycat-dev-build-win64.exe -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifact
+          path: dist/memorycat-dev-build-win64.exe
+
+  # 创建/更新 Pre-release 并上传所有产物
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 允许创建 Release 和标签
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      # 由于下载后各 artifact 在子目录中，将文件移出到同一目录
+      - name: Organize artifacts
+        run: |
+          mkdir -p release
+          find dist -type f -exec cp {} release/ \;
+
+      - name: Create or update dev-build tag
+        run: |
+          git tag -f dev-build
+          git push -f origin dev-build
+
+      - name: Create or update Pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-build
+          name: "Development Build"
+          body: |
+            ## Development Build (自动构建)
+            
+            该版本从 `main` 分支的最新提交自动构建
+            
+            **注意**：此为开发版，可能包含未充分测试的变更，仅供预览。
+          prerelease: true
+          draft: false
+          generate_release_notes: false
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
