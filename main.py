@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-MemoryCat - N.E.K.O 数据备份与管理工具
-Web 控制台运行在端口 48920
-支持持久化配置、角色管理、导入导出、多语言
-"""
 
 import os
 import sys
@@ -28,7 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 # ---------------------------- 配置管理 ----------------------------
 APP_NAME = "MemoryCat"
-PORT = 48920
+PORT = 48921
 
 CONFIG_DIR = Path.cwd() / '.memcat'
 CONFIG_FILE = CONFIG_DIR / 'config.json'
