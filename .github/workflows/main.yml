@@ -70,8 +70,6 @@ jobs:
             --add-data "lang;lang" `
             main.py
           # 将生成的 exe 移动到 dist（若不存在则创建）
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item -Path dist\memorycat-dev-build-win64.exe -Destination dist\memorycat-dev-build-win64.exe -Force
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
