@@ -219,3 +219,6 @@ __marimo__/
 
 # MemoryCat
 .memcat/
+
+# Test directory
+test/
