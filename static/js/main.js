@@ -352,6 +352,9 @@ function deleteRole(name) {
 }
 
 // ---------------------- 账户管理 ----------------------
+// 页面加载时同时加载账户
+fetchAccounts();
+
 function fetchAccounts() {
     fetch('/api/accounts').then(r=>r.json()).then(data=>{
         if (data.success) renderAccounts(data.data);
