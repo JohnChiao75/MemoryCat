@@ -78,7 +78,7 @@ LANG = {
     "character": "角色卡",
     "no_files": "（无文件）",
     "builtin": "内置",
-    "confirm_delete_role": "请输入实例名以确认删除",
+    "confirm_delete_role": "请输入实例名以确认删除", "input_mismatch": "输入不匹配，取消删除", "delete_success": "删除成功！", "delete_snaps_confirm": "是否同时删除相关快照？", "backup_saved": "已备份至", "current": "当前", "view_detail": "查看详情", "switch": "切换", "switch_success": "切换成功", "switch_fail": "切换失败",
     "input_mismatch": "输入不匹配，取消删除",
     "delete_success": "删除成功！",
     "delete_snaps_confirm": "是否同时删除相关快照？",

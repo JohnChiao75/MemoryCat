@@ -288,11 +288,33 @@ function renderRoles(roles) {
         if (!statusHtml) statusHtml = '<span class="text-muted">' + (langDict['no_files']||'（无文件）') + '</span>';
 
         const builtinBadge = r.builtin ? '<span class="badge bg-secondary ms-2">'+(langDict['builtin']||'内置')+'</span>' : '';
+        const currentBadge = r.is_current ? '<span class="badge bg-success ms-2">'+(langDict['current']||'当前')+'</span>' : '';
+        
+        // 角色详情
+        let detailHtml = '';
+        if (r.json_info && Object.keys(r.json_info).length > 0) {
+            detailHtml = '<details class="mt-2"><summary class="cursor-pointer text-primary small">'+(langDict['view_detail']||'查看详情')+'</summary>';
+            detailHtml += '<div class="mt-1 small">';
+            for (const [k, v] of Object.entries(r.json_info)) {
+                if (k.startsWith('_')) continue;
+                const val = Array.isArray(v) ? v.join(', ') : String(v);
+                detailHtml += `<div><strong>${k}:</strong> ${val}</div>`;
+            }
+            detailHtml += '</div></details>';
+        }
+        
+        // 切换按钮
+        const switchBtn = r.is_current ? '' : `<button class="btn btn-sm btn-outline-primary me-1" onclick="switchCharacter('${r.name}')">${langDict['switch']||'切换'}</button>`;
+        
         html += `<div class="col"><div class="card h-100">
             <div class="card-body">
-                <h5 class="card-title">${r.name} ${builtinBadge}</h5>
+                <h5 class="card-title">${r.name} ${builtinBadge} ${currentBadge}</h5>
                 <p class="card-text small">${statusHtml}</p>
-                ${r.builtin ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteRole('${r.name}')">${langDict['delete']||'删除'}</button>`}
+                ${detailHtml}
+                <div class="mt-2">
+                    ${switchBtn}
+                    ${r.builtin || r.is_current ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteRole('${r.name}')">${langDict['delete']||'删除'}</button>`}
+                </div>
             </div>
         </div></div>`;
     });
@@ -300,8 +322,20 @@ function renderRoles(roles) {
     container.innerHTML = html;
 }
 
+function switchCharacter(name) {
+    fetch('/api/characters/switch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+    }).then(r=>r.json()).then(res => {
+        if (res.success) {
+            alert((langDict['switch_success']||'切换成功') + ': ' + name);
+            fetchRoles();
+        } else alert((langDict['switch_fail']||'切换失败') + ': ' + res.error);
+    });
+}
+
 function deleteRole(name) {
-    // 先询问是否同时删除相关快照
     const deleteSnaps = confirm(`${langDict['confirm_delete_role']||'请输入角色名以确认删除'}: "${name}"\n\n${langDict['delete_snaps_confirm']||'是否同时删除相关快照？'}`) === true;
     const confirmName = prompt(`${langDict['confirm_delete_role']||'请输入角色名以确认删除'}: "${name}"`);
     if (confirmName !== name) { alert(langDict['input_mismatch']||'输入不匹配，取消删除'); return; }

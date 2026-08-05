@@ -78,7 +78,7 @@ LANG = {
     "character": "Character Card",
     "no_files": "(no files)",
     "builtin": "Built-in",
-    "confirm_delete_role": "Enter the instance name to confirm deletion",
+    "confirm_delete_role": "Enter the instance name to confirm deletion", "input_mismatch": "Input mismatch, deletion cancelled", "delete_success": "Delete successful!", "delete_snaps_confirm": "Also delete related snapshots?", "backup_saved": "Backed up to", "current": "Current", "view_detail": "View Details", "switch": "Switch", "switch_success": "Switch successful", "switch_fail": "Switch failed",
     "input_mismatch": "Input mismatch, deletion cancelled",
     "delete_success": "Delete successful!",
     "delete_snaps_confirm": "Also delete related snapshots?",

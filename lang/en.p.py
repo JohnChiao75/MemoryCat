@@ -78,7 +78,7 @@ LANG = {
     "character": "Character Card",
     "no_files": "(no files)",
     "builtin": "Built-in",
-    "confirm_delete_role": "Enter the character name to confirm erasure",
+    "confirm_delete_role": "Enter the character name to confirm erasure", "input_mismatch": "Input mismatch, erasure cancelled", "delete_success": "Erase successful!", "delete_snaps_confirm": "Also erase related anchors?", "backup_saved": "Recorded to", "current": "Current", "view_detail": "View Details", "switch": "Switch", "switch_success": "Switch successful", "switch_fail": "Switch failed",
     "input_mismatch": "Input mismatch, erasure cancelled",
     "delete_success": "Erase successful!",
     "delete_snaps_confirm": "Also erase related anchors?",

@@ -442,6 +442,61 @@ def init_scheduler():
     scheduler.add_job(scheduled_backup, trigger=IntervalTrigger(minutes=5), id='backup_job')
     scheduler.start()
 
+# ---------------------------- characters.json 管理 ----------------------------
+CHARACTERS_JSON = NEKO_ROOT / 'config' / 'characters.json'
+
+def load_characters_json():
+    """加载 characters.json"""
+    if not CHARACTERS_JSON.exists():
+        return {'主人': {}, '猫娘': {}, '当前猫娘': None}
+    try:
+        return json.loads(CHARACTERS_JSON.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, Exception):
+        return {'主人': {}, '猫娘': {}, '当前猫娘': None}
+
+def save_characters_json(data):
+    """保存 characters.json"""
+    CHARACTERS_JSON.parent.mkdir(parents=True, exist_ok=True)
+    CHARACTERS_JSON.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+
+def get_current_character():
+    """获取当前字符"""
+    data = load_characters_json()
+    return data.get('当前猫娘')
+
+def switch_character(name):
+    """切换到指定角色"""
+    data = load_characters_json()
+    # 检查角色是否存在于 json 中
+    found = False
+    for cat in ['主人', '猫娘']:
+        if name in data.get(cat, {}):
+            found = True
+            break
+    if not found:
+        # 角色不在 json 中，添加到猫娘组
+        if '猫娘' not in data:
+            data['猫娘'] = {}
+        data['猫娘'][name] = {'昵称': name}
+    data['当前猫娘'] = name
+    save_characters_json(data)
+    return name
+
+def delete_from_characters_json(role_name):
+    """从 characters.json 删除角色"""
+    data = load_characters_json()
+    removed = False
+    for cat in ['主人', '猫娘']:
+        if role_name in data.get(cat, {}):
+            del data[cat][role_name]
+            removed = True
+    # 如果删除的是当前角色，清空当前角色
+    if data.get('当前猫娘') == role_name:
+        data['当前猫娘'] = None
+    if removed:
+        save_characters_json(data)
+    return removed
+
 # ---------------------------- 角色管理 ----------------------------
 def get_roles():
     roles = set()
@@ -898,7 +953,34 @@ def api_get_file_content(snapshot_id):
 @app.route('/api/roles', methods=['GET'])
 @json_response
 def api_get_roles():
-    return get_roles()
+    roles = get_roles()
+    # 添加当前角色标记和 json 详情
+    current = get_current_character()
+    char_json = load_characters_json()
+    for r in roles:
+        r['is_current'] = r['name'] == current
+        # 从 json 获取角色详情
+        r['json_info'] = {}
+        for cat in ['主人', '猫娘']:
+            if r['name'] in char_json.get(cat, {}):
+                r['json_info'] = char_json[cat][r['name']]
+                r['json_category'] = cat
+                break
+    return roles
+
+@app.route('/api/characters/current', methods=['GET'])
+@json_response
+def api_get_current_character():
+    return {'current': get_current_character()}
+
+@app.route('/api/characters/switch', methods=['POST'])
+@json_response
+def api_switch_character():
+    name = request.json.get('name', '') if request.is_json else request.args.get('name', '')
+    if not name:
+        raise ValueError('需要指定角色名')
+    switched = switch_character(name)
+    return {'switched': switched, 'current': get_current_character()}
 
 @app.route('/api/roles/<role_name>', methods=['DELETE'])
 @json_response
@@ -906,9 +988,13 @@ def api_delete_role(role_name):
     confirm = request.args.get('confirm', 'false').lower() == 'true'
     if not confirm:
         raise ValueError('删除角色需要确认')
+    if role_name == get_current_character():
+        raise ValueError('不能删除当前活跃角色，请先切换到其他角色')
     delete_snaps = request.args.get('delete_snapshots', 'false').lower() == 'true'
     backup_path = backup_role(role_name)
     deleted = delete_role(role_name, delete_snapshots=delete_snaps)
+    # 同时从 characters.json 删除
+    delete_from_characters_json(role_name)
     return {'deleted': deleted, 'backup_path': backup_path}
 
 # 导入导出 API
