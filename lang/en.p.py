@@ -59,7 +59,7 @@ LANG = {
     "load_files_fail": "Failed to load file list",
     "read_file_fail": "Failed to read file",
     "empty": "[empty]",
-    "confirm_delete_group": "Are you sure to erase this pack and all its anchors?",
+    "confirm_delete_group": "Are you sure to erase this pack and all its anchors forever? (A long time! )",
     "delete_fail": "Erase failed",
     "save_fail": "Save failed",
     "backup_complete": "Record complete!",
