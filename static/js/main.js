@@ -351,6 +351,112 @@ function deleteRole(name) {
         });
 }
 
+// ---------------------- 账户管理 ----------------------
+function fetchAccounts() {
+    fetch('/api/accounts').then(r=>r.json()).then(data=>{
+        if (data.success) renderAccounts(data.data);
+        else alert('加载账户失败: ' + data.error);
+    });
+}
+
+function renderAccounts(data) {
+    const container = document.getElementById('accountList');
+    if (!data) {
+        container.innerHTML = '<p class="text-muted">无账户数据</p>';
+        return;
+    }
+    let html = '';
+    for (const [category, names] of Object.entries(data)) {
+        if (names.length === 0) continue;
+        html += `<h6 class="mt-3 text-primary">${category}</h6><div class="list-group mb-3">`;
+        names.forEach(name => {
+            html += `<div class="list-group-item d-flex justify-content-between align-items-center">
+                <span>${name}</span>
+                <div>
+                    <button class="btn btn-sm btn-outline-primary me-1" onclick="editAccount('${category}', '${name}')">${langDict['account_edit']||'编辑'}</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount('${category}', '${name}')">${langDict['account_delete']||'删除'}</button>
+                </div>
+            </div>`;
+        });
+        html += '</div>';
+    }
+    if (!html) html = '<p class="text-muted">暂无账户</p>';
+    container.innerHTML = html;
+}
+
+function editAccount(category, name) {
+    fetch(`/api/accounts/${category}/${name}`).then(r=>r.json()).then(data=>{
+        if (data.success) {
+            const fields = data.data.fields || {};
+            let formHtml = '<div class="mb-3">';
+            for (const [k, v] of Object.entries(fields)) {
+                const val = Array.isArray(v) ? v.join(', ') : String(v || '');
+                formHtml += `<div class="mb-2"><label class="form-label small">${k}</label><input class="form-control form-control-sm" name="${k}" value="${val}"></div>`;
+            }
+            formHtml += '</div>';
+            
+            const modalHtml = `
+                <div class="modal fade show" id="accountEditModal" tabindex="-1" style="display:block; background:rgba(0,0,0,0.5);">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">${langDict['account_edit']||'编辑账户'}: ${name}</h5>
+                                <button type="button" class="btn-close" onclick="document.getElementById('accountEditModal').remove()"></button>
+                            </div>
+                            <div class="modal-body">
+                                <input type="hidden" name="category" value="${category}">
+                                <input type="hidden" name="name" value="${name}">
+                                ${formHtml}
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" onclick="document.getElementById('accountEditModal').remove()">取消</button>
+                                <button class="btn btn-primary" onclick="saveAccount('${category}', '${name}')">${langDict['account_save']||'保存'}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+        }
+    });
+}
+
+function saveAccount(category, name) {
+    const modal = document.getElementById('accountEditModal');
+    const formData = new FormData(modal);
+    const fields = {};
+    for (const [k, v] of formData.entries()) {
+        if (k !== 'category' && k !== 'name') fields[k] = v;
+    }
+    fetch(`/api/accounts/${category}/${name}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(fields)})
+        .then(r=>r.json()).then(res => {
+            if (res.success) {
+                modal.remove();
+                fetchAccounts();
+            } else alert('保存失败: ' + res.error);
+        });
+}
+
+function deleteAccount(category, name) {
+    if (!confirm(`确定删除 ${name}？`)) return;
+    fetch(`/api/accounts/${category}/${name}`, {method:'DELETE'})
+        .then(r=>r.json()).then(res => {
+            if (res.success) {
+                fetchAccounts();
+            } else alert('删除失败: ' + res.error);
+        });
+}
+
+function addAccount(category) {
+    const name = prompt(langDict['account_name'] || '请输入账户名');
+    if (!name) return;
+    fetch(`/api/accounts/${category}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, fields: {}})})
+        .then(r=>r.json()).then(res => {
+            if (res.success) {
+                editAccount(category, name);
+            } else alert('创建失败: ' + res.error);
+        });
+}
+
 // ---------------------- 导入导出 ----------------------
 document.getElementById('btnExport').onclick = function() {
     window.location.href = '/api/export';
