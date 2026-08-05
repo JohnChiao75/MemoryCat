@@ -1002,63 +1002,22 @@ def api_delete_role(role_name):
 @json_response
 def api_get_accounts():
     data = load_characters_json()
-    result = {}
-    for cat in ['主人', '猫娘']:
-        result[cat] = list(data.get(cat, {}).keys())
-    return result
+    owner = data.get('主人', {})
+    return {'owner': owner}
 
-@app.route('/api/accounts/<category>/<name>', methods=['GET'])
+@app.route('/api/accounts/owner', methods=['PUT'])
 @json_response
-def api_get_account(name, category):
+def api_update_owner():
     data = load_characters_json()
-    account = data.get(category, {}).get(name, {})
-    return {'name': name, 'category': category, 'fields': account}
-
-@app.route('/api/accounts/<category>/<name>', methods=['PUT'])
-@json_response
-def api_update_account(name, category):
-    data = load_characters_json()
-    if category not in data:
-        data[category] = {}
-    # 获取更新字段
+    if '主人' not in data:
+        data['主人'] = {}
     if request.is_json:
         fields = request.json
     else:
-        fields = {k: v for k, v in request.form.items() if k != 'name'}
-    data[category][name] = fields
+        fields = {k: v for k, v in request.form.items()}
+    data['主人'] = fields
     save_characters_json(data)
     return {'updated': True}
-
-@app.route('/api/accounts/<category>', methods=['POST'])
-@json_response
-def api_create_account(category):
-    data = load_characters_json()
-    if category not in data:
-        data[category] = {}
-    if request.is_json:
-        name = request.json.get('name', '')
-        fields = request.json.get('fields', {})
-    else:
-        name = request.form.get('name', '')
-        fields = {k: v for k, v in request.form.items() if k != 'name'}
-    if not name:
-        raise ValueError('需要指定账户名')
-    data[category][name] = fields
-    save_characters_json(data)
-    return {'created': True, 'name': name}
-
-@app.route('/api/accounts/<category>/<name>', methods=['DELETE'])
-@json_response
-def api_delete_account(name, category):
-    data = load_characters_json()
-    if name in data.get(category, {}):
-        del data[category][name]
-        # 如果删除的是当前角色，清空当前角色
-        if data.get('当前猫娘') == name:
-            data['当前猫娘'] = None
-        save_characters_json(data)
-        return {'deleted': True}
-    raise ValueError('账户不存在')
 
 # 导入导出 API
 @app.route('/api/export', methods=['GET'])
