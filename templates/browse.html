@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文件浏览器 - MemoryCat</title>
+    <title>{% if is_snapshot %}快照浏览器 - {% endif %}MemoryCat</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { padding: 20px; }
@@ -16,17 +16,31 @@
         .file-mtime { color: #6c757d; font-size: 0.85em; margin-left: 15px; }
         a { text-decoration: none; }
         a:hover { text-decoration: underline; }
+        .snapshot-badge {
+            background: #e7f3ff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
     </style>
 </head>
 <body>
 <div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>{% if is_snapshot %}<span class="snapshot-badge">📸 快照 {{ request.args.get('snapshot', '') }}</span> {% endif %}文件浏览器</h4>
+        <div>
+            <a href="/browse{% if is_snapshot %}?snapshot={{ request.args.get('snapshot') }}{% endif %}" class="btn btn-sm btn-outline-primary">刷新</a>
+            <a href="/" class="btn btn-sm btn-secondary">返回主控制台</a>
+        </div>
+    </div>
+
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="/browse">根目录 ({{ root_name }})</a></li>
+            <li class="breadcrumb-item"><a href="/browse{% if is_snapshot %}?snapshot={{ request.args.get('snapshot') }}{% endif %}">根目录 ({{ root_name }})</a></li>
             {% set parts = rel_path.split('/') if rel_path else [] %}
             {% for part in parts %}
                 {% set current = '/'.join(parts[:loop.index]) %}
-                <li class="breadcrumb-item"><a href="/browse?path={{ current }}">{{ part }}</a></li>
+                <li class="breadcrumb-item"><a href="/browse?path={{ current }}{% if is_snapshot %}&snapshot={{ request.args.get('snapshot') }}{% endif %}">{{ part }}</a></li>
             {% endfor %}
         </ol>
     </nav>
@@ -37,17 +51,17 @@
         </div>
         <div class="card-body">
             {% if rel_path %}
-                <p><a href="/browse?path={{ parent_path }}">⬆ 返回上级目录</a></p>
+                <p><a href="/browse?path={{ parent_path }}{% if is_snapshot %}&snapshot={{ request.args.get('snapshot') }}{% endif %}">⬆ 返回上级目录</a></p>
             {% endif %}
             <ul class="file-list">
                 {% for item in items %}
                     <li>
                         {% if item.is_dir %}
                             <span class="file-icon">📁</span>
-                            <a href="/browse?path={{ (rel_path + '/' + item.name) if rel_path else item.name }}">{{ item.name }}</a>
+                            <a href="/browse?path={{ (rel_path + '/' + item.name) if rel_path else item.name }}{% if is_snapshot %}&snapshot={{ request.args.get('snapshot') }}{% endif %}">{{ item.name }}</a>
                         {% else %}
                             <span class="file-icon">📄</span>
-                            <a href="/browse?path={{ (rel_path + '/' + item.name) if rel_path else item.name }}" target="_blank">{{ item.name }}</a>
+                            <a href="/browse?path={{ (rel_path + '/' + item.name) if rel_path else item.name }}{% if is_snapshot %}&snapshot={{ request.args.get('snapshot') }}{% endif %}" target="_blank">{{ item.name }}</a>
                             <span class="file-size">{{ (item.size / 1024)|round(1) }} KB</span>
                             <span class="file-mtime">{{ item.mtime|timestamp_to_datetime }}</span>
                         {% endif %}
@@ -58,7 +72,6 @@
             </ul>
         </div>
     </div>
-    <p class="mt-3"><a href="/" class="btn btn-secondary">返回主控制台</a></p>
 </div>
 
 <script>

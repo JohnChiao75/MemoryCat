@@ -91,20 +91,34 @@ def load_lang_dict(lang_code, use_p=False, use_d=False):
     base_file = LANG_DIR / f"{lang_code}.py"
     if not base_file.exists():
         return {}
-    candidates = []
-    if use_p and use_d:
-        candidates.append(LANG_DIR / f"{lang_code}.p.d.py")
-    if use_d:
-        candidates.append(LANG_DIR / f"{lang_code}.d.py")
-    if use_p:
-        candidates.append(LANG_DIR / f"{lang_code}.p.py")
-    candidates.append(base_file)
-
     final_dict = {}
-    for file_path in candidates:
-        if file_path.exists():
+    # 先加载基础文件
+    if base_file.exists():
+        try:
+            spec = importlib.util.spec_from_file_location("lang_module", base_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, 'LANG'):
+                final_dict.update(module.LANG)
+        except Exception:
+            pass
+    # 然后按优先级加载扩展：.d > .p（后加载的覆盖先加载的）
+    if use_p:
+        p_file = LANG_DIR / f"{lang_code}.p.py"
+        if p_file.exists():
             try:
-                spec = importlib.util.spec_from_file_location("lang_module", file_path)
+                spec = importlib.util.spec_from_file_location("lang_p", p_file)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                if hasattr(module, 'LANG'):
+                    final_dict.update(module.LANG)
+            except Exception:
+                pass
+    if use_d:
+        d_file = LANG_DIR / f"{lang_code}.d.py"
+        if d_file.exists():
+            try:
+                spec = importlib.util.spec_from_file_location("lang_d", d_file)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 if hasattr(module, 'LANG'):
@@ -452,7 +466,26 @@ def get_roles():
         result.append(info)
     return result
 
-def delete_role(role_name):
+def backup_role(role_name):
+    """备份指定角色到 BACKUP_ROOT/role_backups/<name>/<timestamp>.zip"""
+    import zipfile
+    backup_dir = BACKUP_ROOT / 'role_backups' / role_name
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    zip_path = backup_dir / f'{role_name}_{ts}.zip'
+    dirs_to_backup = ['memory', 'character_cards', 'vrm', 'mmd', 'live2d']
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for d in dirs_to_backup:
+            src = NEKO_ROOT / d / role_name
+            if src.exists():
+                for root, _, files in os.walk(src):
+                    for f in files:
+                        fp = Path(root) / f
+                        arcname = fp.relative_to(NEKO_ROOT)
+                        zf.write(fp, arcname)
+    return str(zip_path)
+
+def delete_role(role_name, delete_snapshots=False):
     if role_name == 'YUI':
         raise ValueError('不能删除内置角色 YUI')
     dirs_to_delete = ['memory', 'character_cards', 'vrm', 'mmd', 'live2d']
@@ -464,6 +497,21 @@ def delete_role(role_name):
             deleted.append(str(target))
     if not deleted:
         raise ValueError(f'角色 {role_name} 不存在任何关联目录')
+    if delete_snapshots:
+        conn = get_db()
+        c = conn.cursor()
+        # 查找包含该角色路径的快照并删除
+        c.execute('SELECT id, path FROM snapshots')
+        for sid, spath in c.fetchall():
+            sp = Path(spath)
+            if any(role_name in str(p) for p in sp.rglob('*')):
+                try:
+                    shutil.rmtree(spath)
+                except Exception:
+                    pass
+                c.execute('DELETE FROM snapshots WHERE id=?', (sid,))
+        conn.commit()
+        conn.close()
     return deleted
 
 # ---------------------------- 导入导出 ----------------------------
@@ -557,12 +605,30 @@ def timestamp_to_datetime(ts):
 
 @app.route('/browse')
 def browse_page():
-    """文件浏览器页面"""
+    """文件浏览器页面 - 支持 NEKO 目录和快照目录"""
     rel_path = request.args.get('path', '')
-    try:
-        target = safe_path(rel_path)
-    except ValueError:
-        abort(404)
+    snapshot_id = request.args.get('snapshot', type=int)
+
+    # 如果指定了 snapshot，则浏览快照目录
+    if snapshot_id:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT path FROM snapshots WHERE id=?', (snapshot_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            abort(404)
+        base = Path(row[0])
+        if rel_path:
+            target = base / rel_path
+        else:
+            target = base
+        root_name = f'snapshot_{snapshot_id}'
+    else:
+        # 浏览 NEKO 目录
+        target = safe_path(rel_path) if rel_path else NEKO_ROOT
+        root_name = NEKO_ROOT.name
+
     if not target.exists():
         abort(404)
     if not target.is_dir():
@@ -594,16 +660,35 @@ def browse_page():
                            rel_path=rel_path,
                            parent_path=parent_path,
                            items=items,
-                           root_name=NEKO_ROOT.name)
+                           root_name=root_name,
+                           is_snapshot=bool(snapshot_id))
 
 @app.route('/api/browse')
 def api_browse():
-    """返回目录内容的 JSON 数据（供前端 AJAX 使用）"""
+    """返回目录内容的 JSON 数据（供前端 AJAX 使用）- 支持快照"""
     rel_path = request.args.get('path', '')
-    try:
-        target = safe_path(rel_path)
-    except ValueError:
-        return jsonify({'success': False, 'error': '路径越界'}), 400
+    snapshot_id = request.args.get('snapshot', type=int)
+
+    # 如果指定了 snapshot，则浏览快照目录
+    if snapshot_id:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT path FROM snapshots WHERE id=?', (snapshot_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({'success': False, 'error': '快照不存在'}), 404
+        base = Path(row[0])
+        if rel_path:
+            target = base / rel_path
+        else:
+            target = base
+    else:
+        try:
+            target = safe_path(rel_path) if rel_path else NEKO_ROOT
+        except ValueError:
+            return jsonify({'success': False, 'error': '路径越界'}), 400
+
     if not target.exists() or not target.is_dir():
         return jsonify({'success': False, 'error': '目录不存在'}), 404
     items = []
@@ -626,7 +711,8 @@ def api_browse():
         'success': True,
         'items': items,
         'rel_path': rel_path,
-        'parent': parent
+        'parent': parent,
+        'is_snapshot': bool(snapshot_id)
     })
 
 def json_response(func):
@@ -820,8 +906,10 @@ def api_delete_role(role_name):
     confirm = request.args.get('confirm', 'false').lower() == 'true'
     if not confirm:
         raise ValueError('删除角色需要确认')
-    deleted = delete_role(role_name)
-    return {'deleted': deleted}
+    delete_snaps = request.args.get('delete_snapshots', 'false').lower() == 'true'
+    backup_path = backup_role(role_name)
+    deleted = delete_role(role_name, delete_snapshots=delete_snaps)
+    return {'deleted': deleted, 'backup_path': backup_path}
 
 # 导入导出 API
 @app.route('/api/export', methods=['GET'])

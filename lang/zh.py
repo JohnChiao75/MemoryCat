@@ -81,6 +81,8 @@ LANG = {
     "confirm_delete_role": "请输入实例名以确认删除",
     "input_mismatch": "输入不匹配，取消删除",
     "delete_success": "删除成功！",
+    "delete_snaps_confirm": "是否同时删除相关快照？",
+    "backup_saved": "已备份至",
     "select_zip_first": "请选择 ZIP 文件",
     "analyzing": "分析中...",
     "no_conflicts": "无冲突，可直接导入",

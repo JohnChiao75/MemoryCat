@@ -81,6 +81,8 @@ LANG = {
     "confirm_delete_role": "Enter the character name to confirm deletion",
     "input_mismatch": "Input mismatch, deletion cancelled",
     "delete_success": "Delete successful!",
+    "delete_snaps_confirm": "Also delete related snapshots?",
+    "backup_saved": "Backed up to",
     "select_zip_first": "Please select a ZIP file",
     "analyzing": "Analyzing...",
     "no_conflicts": "No conflicts, can import directly",

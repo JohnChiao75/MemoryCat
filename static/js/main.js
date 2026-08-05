@@ -165,29 +165,8 @@ function rollback(snapshotId) {
 }
 
 function browseSnapshot(snapshotId) {
-    const container = document.getElementById('fileBrowser');
-    container.style.display = 'block';
-    const fileList = document.getElementById('fileList');
-    const contentDiv = document.getElementById('fileContent');
-    contentDiv.innerText = '';
-    fetch(`/api/snapshots/${snapshotId}/files`).then(r=>r.json()).then(data=>{
-        if (data.success) {
-            let html = '<ul class="list-unstyled" style="font-size:0.9em;">';
-            data.data.forEach(f => {
-                html += `<li><a href="#" onclick="viewFile(${snapshotId}, '${f}'); return false;">${f}</a></li>`;
-            });
-            html += '</ul>';
-            fileList.innerHTML = html;
-        } else alert((langDict['load_files_fail']||'加载文件列表失败') + ': ' + data.error);
-    });
-}
-
-function viewFile(snapshotId, path) {
-    fetch(`/api/snapshots/${snapshotId}/file?path=${encodeURIComponent(path)}`)
-        .then(r=>r.json()).then(data=>{
-            if (data.success) document.getElementById('fileContent').innerText = data.data.content || (langDict['empty']||'[空]');
-            else alert((langDict['read_file_fail']||'读取文件失败') + ': ' + data.error);
-        });
+    // 直接跳转到文件浏览器页面，传入快照ID
+    window.open(`/browse?snapshot=${snapshotId}`, '_blank');
 }
 
 // 新增/编辑组
@@ -322,12 +301,19 @@ function renderRoles(roles) {
 }
 
 function deleteRole(name) {
+    // 先询问是否同时删除相关快照
+    const deleteSnaps = confirm(`${langDict['confirm_delete_role']||'请输入角色名以确认删除'}: "${name}"\n\n${langDict['delete_snaps_confirm']||'是否同时删除相关快照？'}`) === true;
     const confirmName = prompt(`${langDict['confirm_delete_role']||'请输入角色名以确认删除'}: "${name}"`);
     if (confirmName !== name) { alert(langDict['input_mismatch']||'输入不匹配，取消删除'); return; }
-    fetch(`/api/roles/${name}?confirm=true`, {method:'DELETE'})
+    const params = new URLSearchParams({confirm: 'true', delete_snapshots: deleteSnaps});
+    fetch(`/api/roles/${name}?${params}`, {method:'DELETE'})
         .then(r=>r.json()).then(res=>{
-            if (res.success) { alert(langDict['delete_success']||'删除成功！'); fetchRoles(); }
-            else alert((langDict['delete_fail']||'删除失败') + ': ' + res.error);
+            if (res.success) {
+                let msg = langDict['delete_success']||'删除成功！';
+                if (res.data.backup_path) msg += `\n${langDict['backup_saved']||'已备份至'}: ${res.data.backup_path}`;
+                alert(msg);
+                fetchRoles();
+            } else alert((langDict['delete_fail']||'删除失败') + ': ' + res.error);
         });
 }
 
